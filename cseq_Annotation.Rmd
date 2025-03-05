@@ -1,18 +1,9 @@
 ---
-title: "new_annotation_Joe_021925"
+title: "cseq_Annotation"
 output: html_document
-date: "2025-02-19"
----
----
-title: "new-annotation"
-output: html_document
-date: "2025-02-07"
+date: "2025-03-05"
 ---
 
----
-title: "Complete MapMyCells Analysis Pipeline"
-output: html_notebook
----
 ###in terminal, run:
 # Create a new conda environment with Python 3.10
 conda create -n mapmycell python=3.10
