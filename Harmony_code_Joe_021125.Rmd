@@ -1,0 +1,231 @@
+---
+title: "Harmony_code_Joe"
+output: html_document
+date: "2025-02-11"
+---
+
+```{r}
+# library all needed packages
+
+library(dplyr)
+library(ggplot2)
+library(fuzzyjoin)
+library(tidyr)
+library(pheatmap)
+library(stringdist)
+library("Seurat")
+library("reticulate")
+library("patchwork")
+library(sctransform)
+library(anndata)
+library(stringr)
+library(harmony)
+library(cowplot)
+library(future)
+library(readr)
+```
+
+```{r}
+# function block
+
+# function 1: RunSeurat.Joe.v1, filter out unwanted data through mitochondria gene percentage, RNA features, RNA count and doublet percentage.
+RunSeurat.Joe.v1 <- function(
+    ObjList,
+    MitoPercent,
+    Filter_nFeature_RNA = c(100, 8000),
+    Filter_nCount_RNA = c(500, 50000),
+    nPCs = 15,
+    DoubletPercent = 0.08
+) {
+    ObjList <- lapply(
+        X = ObjList,
+        FUN = function(Obj) {
+            Obj[["percent_mt"]] <- PercentageFeatureSet(Obj, pattern = "^mt-")
+            Obj <- subset(
+                Obj,
+                subset = 
+                    nFeature_RNA > Filter_nFeature_RNA[1] & 
+                    nFeature_RNA < Filter_nFeature_RNA[2] & 
+                    nCount_RNA > Filter_nCount_RNA[1] & 
+                    nCount_RNA < Filter_nCount_RNA[2] & 
+                    percent_mt < MitoPercent
+            )
+            return(Obj)
+        }
+    )
+    return(ObjList)
+}
+
+# function 2: 
+
+create_br_seurat <- function(data_path, # br for brain region
+                             assay_type = "Antibody Capture",
+                             synbar_features = c('SynBarpost', 'SynBarpre'),
+                             default_assay = "RNA") {
+    # Read in raw data  
+    br.mrna.data <- Read10X(data_path)
+    
+    # Create the main Seurat object (Gene Expression)
+    br_obj <- CreateSeuratObject(counts = br.mrna.data$`Gene Expression`)
+    
+    # Create a Synbar Assay
+    synbar_data <- br.mrna.data[[assay_type]][synbar_features, ]
+    synbar_data <- CreateAssayObject(counts = synbar_data)
+    
+    # Add Synbar
+    br_obj[["Synbar"]] <- synbar_data
+    
+    # Set as default assay
+    Seurat::DefaultAssay(br_obj) <- default_assay
+    
+    return(br_obj)
+}
+
+```
+
+```{r}
+#' Integrate single-cell data with Harmony batch correction
+#' 
+#' @param br.list Input list of Seurat objects (equivalent to pn.list in original code)
+#' @param filter_param Filtering parameter for RunSeurat.Joe.v1 (default = 5)
+#' @param cell_ids Cell ID prefixes for merging (must match length of br.list)
+#' @param nfeatures Number of highly variable features to select per batch (default = 2000)
+#' @param npcs Number of principal components for PCA (default = 30)
+#' @param verbose Whether to show progress messages (default = FALSE)
+#' @return Integrated Seurat object with Harmony correction (equivalent to pn.af)
+
+create_harmony_integration <- function(br.list, 
+                                    filter_param = 5, 
+                                    cell_ids = NULL,
+                                    nfeatures = 2000,
+                                    npcs = 30,
+                                    verbose = FALSE) {
+  # Load required packages
+  require(Seurat)
+  require(harmony)
+  
+  # Step 1: Data filtering
+  br.af.filtered <- RunSeurat.Joe.v1(br.list, filter_param)
+  
+  # Generate cell IDs if not provided
+  if (is.null(cell_ids)) {
+    cell_ids <- as.character(seq_along(br.af.filtered))
+  } else if (length(cell_ids) != length(br.af.filtered)) {
+    stop("cell_ids length must match filtered object count")
+  }
+  
+  # Step 2: Object merging
+  br.af <- merge(
+    x = br.af.filtered[[1]],
+    y = br.af.filtered[-1],
+    add.cell.ids = cell_ids
+  ) %>% JoinLayers()
+  
+  # Add batch information (extracted from merged cell names)
+  br.af$batch <- sub("_.*", "", colnames(br.af))
+  
+  # Step 3: Normalization and feature selection
+  br.af <- NormalizeData(br.af, verbose = verbose)
+  
+  # Batch-wise HVG selection
+  batch_cells <- split(colnames(br.af), br.af$batch)
+  var_features <- lapply(batch_cells, function(cells) {
+    subset(br.af, cells = cells) %>% 
+      FindVariableFeatures(
+        selection.method = "vst",
+        nfeatures = nfeatures,
+        verbose = verbose
+      ) %>% 
+      VariableFeatures()
+  }) %>% unlist() %>% unique()
+  
+  VariableFeatures(br.af) <- var_features
+  
+  # Step 4: Dimension reduction and batch correction
+  br.af <- ScaleData(br.af, verbose = verbose) %>% 
+    RunPCA(
+      features = var_features,
+      npcs = npcs,
+      verbose = verbose
+    ) %>% 
+    RunHarmony(
+      group.by.vars = "batch",
+      verbose = verbose
+    )
+  
+  return(br.af)
+}
+```
+
+```{r}
+# Read in all the raw data
+
+pn_path_list <- c(
+  "/home/boxuan/data/cseq1/cseq1-PN2/outs/filtered_feature_bc_matrix",
+  "/media/boxuan/data2/cseq25/cseq25-PN-new/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq31/cseq31-PN-new/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq34/cseq34-1pn/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq34/cseq34-2pn/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq35/cseq35-PN3/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq36/cseq36-PN2/outs/filtered_feature_bc_matrix/"
+)
+pn1 <- create_br_seurat(pn_path_list[1])
+pn25 <- create_br_seurat(pn_path_list[2])
+pn31 <- create_br_seurat(pn_path_list[3])
+pn34.1 <- create_br_seurat(pn_path_list[4], assay_type = "Custom")
+pn34.2 <- create_br_seurat(pn_path_list[5], assay_type = "Custom")
+pn34.2 <- RenameCells(pn34.2, new.names = setNames(sub('-1', '-2', Cells(pn34.2)), Cells(pn34.2)))
+pn35 <- create_br_seurat(pn_path_list[6], assay_type = "Custom")
+pn36 <- create_br_seurat(pn_path_list[7])
+
+pn.list <- c(pn1, pn25, pn31, pn34.1, pn34.2, pn35, pn36)
+```
+
+```{r}
+cn_path_list <- c(
+  "/home/boxuan/data/cseq1/cseq1-CN2/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq25/cseq25-CN2/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq31/cseq31-CN-new/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq34/cseq34-1cn/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq34/cseq34-2cn/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq35/cseq35-CN3/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/data2/cseq36/cseq36-CN2/outs/filtered_feature_bc_matrix/"
+)
+cn1 <- create_br_seurat(cn_path_list[1])
+cn25 <- create_br_seurat(cn_path_list[2], assay_type = "Custom")
+cn31 <- create_br_seurat(cn_path_list[3])
+cn34.1 <- create_br_seurat(cn_path_list[4], assay_type = "Custom")
+cn34.2 <- create_br_seurat(cn_path_list[5], assay_type = "Custom")
+cn34.2 <- RenameCells(cn34.2, new.names = setNames(sub('-1', '-2', Cells(cn34.2)), Cells(cn34.2)))
+cn35 <- create_br_seurat(cn_path_list[6], assay_type = "Custom")
+cn36 <- create_br_seurat(cn_path_list[7])
+
+cn.list <- c(cn1, cn25, cn31, cn34.1, cn34.2, cn35, cn36)
+```
+
+```{r}
+pn.af <- create_harmony_integration(
+  br.list = pn.list,
+  filter_param = 5,
+  cell_ids = c("1","25","31","34","34","35","36"),
+  nfeatures = 2000,
+  npcs = 30
+)
+
+cn.af <- create_harmony_integration(
+  br.list = cn.list,
+  filter_param = 5,
+  cell_ids = c("1","25","31","34","34","35","36"),
+  nfeatures = 2000,
+  npcs = 30,
+  verbose = TRUE
+)
+save(pn.af, cn.af, file = "/data/R/CSeq_reanalyze/connectome-seq_code_Joe/harmonyCorrectedBatch.RData")
+```
+
+
+```{r}
+
+
+
+```

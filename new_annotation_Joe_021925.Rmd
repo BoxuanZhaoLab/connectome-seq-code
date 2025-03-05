@@ -1,0 +1,228 @@
+---
+title: "new_annotation_Joe_021925"
+output: html_document
+date: "2025-02-19"
+---
+---
+title: "new-annotation"
+output: html_document
+date: "2025-02-07"
+---
+
+---
+title: "Complete MapMyCells Analysis Pipeline"
+output: html_notebook
+---
+###in terminal, run:
+# Create a new conda environment with Python 3.10
+conda create -n mapmycell python=3.10
+
+# Activate the environment
+conda activate mapmycell
+
+# Install required packages
+conda install numpy pandas scipy h5py
+pip3 install anndata>=0.11.0 scanpy
+pip3 install git+https://github.com/AllenInstitute/cell_type_mapper.git
+###
+###restart R if needed
+```{r setup}
+# Load required libraries
+library(Seurat)
+library(reticulate)
+library(Matrix)
+library(dplyr)
+library(biomaRt)
+library(ggplot2)
+# Configure Python environment
+use_condaenv("mapmycell", required = TRUE)
+
+# Verify Python configuration
+py_config()
+```
+
+```{python}
+# Import required Python packages
+import scipy.sparse
+import anndata
+import numpy as np
+import pandas as pd
+from cell_type_mapper.cli.from_specified_markers import FromSpecifiedMarkersRunner
+```
+
+```{r prepare_function}
+prepare_for_mapmycell <- function(seurat_obj, output_file) {
+  # Get raw counts
+  t_counts <- seurat_obj@assays$RNA$counts
+  genes <- rownames(t_counts)
+  
+  print(paste("Initial dimensions:", nrow(t_counts), "genes by", ncol(t_counts), "cells"))
+  
+  # ESSENTIAL: Convert gene IDs using your working code
+  mart <- useDataset("mmusculus_gene_ensembl", useMart("ensembl", host="https://www.ensembl.org"))
+  gene_list <- getBM(filters= "external_gene_name", 
+                    attributes= c("ensembl_gene_id", "external_gene_name", "description"), 
+                    values=genes, mart= mart)
+  
+  print(paste("Genes with Ensembl mappings:", nrow(gene_list)))
+  
+  # ESSENTIAL: Handle duplicates exactly as in your code
+  test.dup <- duplicated(gene_list$external_gene_name)
+  gene_list$external_gene_name[test.dup] <- gene_list$ensembl_gene_id[test.dup]
+  
+  # ESSENTIAL: Filter and rename count matrix as in your code
+  counts.reduced <- t_counts
+  gene_list <- gene_list[gene_list$external_gene_name %in% rownames(counts.reduced),]
+  counts.reduced <- counts.reduced[gene_list$external_gene_name,]
+  rownames(counts.reduced) <- gene_list$ensembl_gene_id
+  counts <- t(counts.reduced)
+  
+  print(paste("Final number of genes after ID conversion:", ncol(counts)))
+  
+  # Create sparse matrix and pass to Python
+  genes <- colnames(counts)
+  samples <- rownames(counts)
+  sparse_counts <- as(counts, "dgCMatrix")
+  
+  # Pass data to Python environment
+  py$count_matrix <- sparse_counts
+  py$obs <- samples
+  py$var <- genes
+  
+  # Return statistics
+  list(
+    total_genes = length(genes),
+    mapped_genes = nrow(gene_list),
+    nonzero = sum(sparse_counts@x != 0)
+  )
+}
+```
+
+
+```{python}
+def create_and_map(count_matrix, obs, var, output_file, stats_path, markers_path):
+    """Create h5ad file and run mapping"""
+    # Convert to scipy sparse matrix
+    count_matrix_sparse = scipy.sparse.csr_matrix(count_matrix)
+    
+    # Create AnnData object
+    adata = anndata.AnnData(
+        X=count_matrix_sparse,
+        obs=pd.DataFrame(index=obs),
+        var=pd.DataFrame(index=var)
+    )
+    
+    # Write h5ad file
+    adata.write_h5ad(output_file, compression='gzip')
+    print(f"Wrote data to {output_file}")
+    
+    # Configure mapping parameters
+    config = {
+        "query_path": output_file,
+        "extended_result_path": output_file.replace('.h5ad', '_results.json'),
+        "csv_result_path": output_file.replace('.h5ad', '_results.csv'),
+        "precomputed_stats": {
+            "path": stats_path
+        },
+        "query_markers": {
+            "serialized_lookup": markers_path
+        },
+        "type_assignment": {
+            "normalization": "raw",
+            "bootstrap_iteration": 100,
+            "bootstrap_factor": 0.9,
+            "n_processors": 8
+        }
+    }
+    
+    # Run mapping
+    print("Running mapping...")
+    runner = FromSpecifiedMarkersRunner(args=[], input_data=config)
+    runner.run()
+    print("Mapping complete!")
+    #clear variable for next use
+    del count_matrix
+    del obs
+    del var
+```
+
+```{r process_data}
+# Set paths to reference files
+stats_path <- "/data/R/CSeq_final_analyze/cell_type_mapper/cell_type_mapper/precomputed_stats_ABC_revision_230821.h5"  # Replace with actual path
+markers_path <- "/data/R/CSeq_final_analyze/cell_type_mapper/cell_type_mapper/mouse_markers_230821.json"  # Replace with actual path
+
+# Create output directory if it doesn't exist
+dir.create("data", showWarnings = FALSE)
+
+# Process CB dataset
+print("Processing CB dataset...")
+scdata.CB <- cn.af
+cb_stats <- prepare_for_mapmycell(
+  scdata.CB, 
+  "./data/scdata_CB_counts.h5ad"
+)
+print("CB dataset statistics:")
+print(cb_stats)
+
+# Create h5ad and run mapping for CB
+py$stats_path <- stats_path
+py$markers_path <- markers_path
+py_run_string('create_and_map(count_matrix, obs, var, "./data/scdata_CB_counts.h5ad", stats_path, markers_path)')
+
+# Clean up Python variables
+py_run_string('del count_matrix; del obs; del var')
+
+# Process PN dataset
+print("Processing PN dataset...")
+scdata.PN <- pn.af
+pn_stats <- prepare_for_mapmycell(
+  scdata.PN, 
+  "./data/scdata_PN_counts.h5ad"
+)
+print("PN dataset statistics:")
+print(pn_stats)
+
+# Reset paths and run mapping for PN
+py$stats_path <- stats_path
+py$markers_path <- markers_path
+py_run_string('create_and_map(count_matrix, obs, var, "./data/scdata_PN_counts.h5ad", stats_path, markers_path)')
+```
+
+```{r process_results}
+process_mapping_results <- function(seurat_obj, csv_path, confidence_threshold = 0.7) {
+  # Read mapping results
+  mapping_results <- read.csv(csv_path, skip = 4, header = TRUE)
+  
+  # Add annotations to Seurat object
+  seurat_obj$mapmycell_class <- mapping_results$class_name
+  seurat_obj$mapmycell_subclass <- mapping_results$subclass_name
+  seurat_obj$mapmycell_confidence <- mapping_results$subclass_bootstrapping_probability
+  
+  # Create filtered annotations
+  seurat_obj$mapmycell_filtered <- ifelse(
+    seurat_obj$mapmycell_confidence >= confidence_threshold,
+    seurat_obj$mapmycell_subclass,
+    "Low_confidence"
+  )
+  
+  # Return updated object
+  seurat_obj
+}
+
+# Process results for both datasets
+scdata.CB <- process_mapping_results(scdata.CB, "./data/scdata_CB_counts_results.csv")
+scdata.PN <- process_mapping_results(scdata.PN, "./data/scdata_PN_counts_results.csv")
+
+# Visualize results
+p1 <- DimPlot(scdata.CB, group.by = "mapmycell_filtered", label = TRUE) +
+  ggtitle("CB MapMyCells Annotations")
+p2 <- DimPlot(scdata.PN, group.by = "mapmycell_filtered", label = TRUE) +
+  ggtitle("PN MapMyCells Annotations")
+
+print(p1)
+print(p2)
+
+# Save updated Seurat objects
+saveRDS(scdata.CB, file = "scdata.CB.mapped.rds")
+saveRDS(scdata.PN, file = "scdata.PN.mapped.rds")
+```

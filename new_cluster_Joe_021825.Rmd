@@ -1,0 +1,932 @@
+---
+title: "new_cluster"
+output: html_document
+date: "2025-01-27"
+---
+
+```{r setup, include=FALSE}
+library(Seurat)
+library(ggplot2)
+library(dplyr)
+
+analyze_seurat_clusters <- function(seurat_obj, features_list, output_prefix) {
+      # Create basic UMAP plot with cluster numbers
+    p0 <- DimPlot(seurat_obj, 
+                  reduction = "umap", 
+                  label = TRUE,     # Show cluster numbers
+                  pt.size = 0.5,    # Adjust point size for clarity
+                  label.size = 6) + # Make cluster numbers readable
+        theme_minimal() +
+        ggtitle(paste(output_prefix, "Clusters")) +
+        theme(plot.title = element_text(hjust = 0.5))
+    
+    ggsave(paste0(output_prefix, "_umap_clusters.pdf"), 
+           p0, 
+           width = 8, 
+           height = 8)  
+  # Create dot plot of marker genes
+    p1 <- DotPlot(seurat_obj, 
+                  features = features_list,
+                  cols = c("lightgrey", "red"),
+                  dot.scale = 8) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        ggtitle(paste(output_prefix, "Marker Genes"))
+    
+    ggsave(paste0(output_prefix, "_markers_dotplot.pdf"), 
+           p1, 
+           width = 12, 
+           height = 8)
+
+    # Quality metrics per cluster
+    metrics <- data.frame(
+        cluster = Idents(seurat_obj),
+        nCount = seurat_obj$nCount_RNA,
+        nFeature = seurat_obj$nFeature_RNA,
+        percent_mt = seurat_obj$percent_mt  # Changed from percent.mt
+    )
+
+    # Calculate cluster-level statistics
+    cluster_stats <- metrics %>%
+    group_by(cluster) %>%
+    summarise(
+        median_nCount = median(nCount),
+        mean_nCount = mean(nCount),
+        median_nFeature = median(nFeature),
+        mean_nFeature = mean(nFeature),
+        median_percent_mt = median(percent_mt),
+        mean_percent_mt = mean(percent_mt),
+        cells = n()
+    )
+
+    write.csv(cluster_stats, 
+              file = paste0(output_prefix, "_cluster_stats.csv"))
+
+    # Quality metric visualizations
+    p2 <- ggplot(metrics, aes(x = factor(cluster), y = nCount)) +
+        geom_violin(fill = "lightblue") +
+        geom_boxplot(width = 0.1) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        ggtitle("UMI counts per cluster")
+    ggsave(paste0(output_prefix, "_nCount_distribution.pdf"), p2)
+
+    p3 <- ggplot(metrics, aes(x = factor(cluster), y = nFeature)) +
+        geom_violin(fill = "lightgreen") +
+        geom_boxplot(width = 0.1) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        ggtitle("Gene counts per cluster")
+    ggsave(paste0(output_prefix, "_nFeature_distribution.pdf"), p3)
+
+    p4 <- ggplot(metrics, aes(x = factor(cluster), y = percent_mt)) +
+        geom_violin(fill = "salmon") +
+        geom_boxplot(width = 0.1) +
+        theme_minimal() +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        ggtitle("Percent mitochondrial genes per cluster")
+    ggsave(paste0(output_prefix, "_mito_distribution.pdf"), p4)
+
+    return(cluster_stats)
+}
+
+# Define marker genes for each region
+features.plot.pn <- c(
+    # Glut markers
+    "Slc17a6", "Slc17a7",
+    # GABA markers
+    "Gad1", "Gad2", "Slc32a1",
+    # Glyc
+    "Slc6a5",
+    # Sero
+    "Slc6a4", "Tph2", 
+    # ODC markers
+    "Mobp",
+    # OPC markers
+    "Ppfibp1",
+    # Astrocyte markers
+    "Aqp4",
+    # Endothelial markers
+    "Gnrhr", "Kcnh8",
+    # Microglia marker
+    "Cfh",
+    # Macrophage markers
+    "Mrc1", "C1qa"
+)
+
+features.plot.cn <- c(
+    "Gabra6", "Ppp1r17", "Lypd6", "Prkcd", "Klhl1", "Lgi2", "Eomes",
+    "Mobp", "Ppfibp1", "Gdf10", "Aqp4", "Cfh","Mrc1", "C1qa", "Dcn", 
+    "Foxj1", "Ttr", "Flt1"
+)
+
+# Function to process Seurat object
+process_seurat_object <- function(seurat_obj, n.pcs = 30) {
+    # Normalize and find variable features
+    seurat_obj <- NormalizeData(seurat_obj)
+    seurat_obj <- FindVariableFeatures(seurat_obj)
+    
+    # Scale data and run PCA
+    seurat_obj <- ScaleData(seurat_obj)
+    seurat_obj <- RunPCA(seurat_obj)
+    
+    # Run UMAP
+    seurat_obj <- RunUMAP(seurat_obj, dims = 1:n.pcs)
+    
+    return(seurat_obj)
+}
+```
+
+
+#celltyping
+```{r}
+custom_colors.cn.all <- c(
+    "Granule" = "#00BFA5",        # Bright teal-green (like pons Glut)
+    "UBC" = "#64DD17",            # Dark forest green
+    "Purkinje" = "#D32F2F",     # Deep red
+    "MLI1" = "#FF6F00",         # Deep orange
+    "MLI2" = "#9C27B0",         # Purple
+    "Golgi" = "#795548",        # Brown
+    "PLI" = "#C51162",            # Deep magenta
+    # Non-neuronal cells (all distinct)
+    "Bergmann" = "#6200EA",       # Deep purple
+    "Astro" = "#AA00FF",      # Bright purple
+    "ODC" = "#0091EA",            # Bright blue
+    "OPC" = "#2962FF",            # Deep blue
+    "Endo" = "cyan",    
+    "Epen" = "#FFB300",      # Amber/gold
+    "Macro" = "lightblue",
+    "Micro" = "lightgreen",
+    "Choroid" = "lightpink",        # Brown
+    "Low quality" = "#BDBDBD"         # Light gray
+)
+
+
+custom_colors.pn.all <- c(
+    "Fat2 Glut" = "#00BFA5",
+    "Hoxb5 Glut" = "#64DD17",
+    "Gata3 Gly-Gaba" = "#FF6D00",
+    "Otp Pax3 Gaba" = "brown",
+    "Onecut1 Gaba" = "maroon",
+    "Tph2 Glut-Sero" = "#FF1744",
+    "Astro" = "#AA00FF",      # Bright purple
+    "ODC" = "#0091EA",            # Bright blue
+    "OPC" = "#2962FF",            # Deep blue
+    "Endo" = "cyan",    
+    "Epen" = "#FFB300",      # Amber/gold
+    "Macro" = "lightblue",
+    "Micro" = "lightgreen",
+    "Choroid" = "lightpink",        # Brown
+    "Low quality" = "#BDBDBD"         # Light gray
+)
+```
+
+```{r}
+scdata.PN.mapped <- readRDS("scdata.PN.mapped.rds")
+scdata.CB.mapped <- readRDS("scdata.CB.mapped.rds")
+```
+
+#process PN
+```{r}
+#optimize PN cluster resolution
+# Define a range of resolutions to test
+resolutions <- seq(0.6, 1.0, by = 0.1)
+
+# Create a list to store results
+all_results <- list()
+
+scdata.PN.mapped.1 <- scdata.PN.mapped %>% 
+  RunUMAP(reduction = "harmony", dims = 1:30) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30)
+
+# Loop through resolutions
+for(res in resolutions) {
+    # Create a clean label for this resolution
+    res_label <- sprintf("res%.2f", res)
+    
+    # Run clustering at this resolution
+    scdata.PN.temp <- FindClusters(scdata.PN.mapped.1, resolution = res)
+    
+    # Run your analysis function
+    results <- analyze_seurat_clusters(
+        scdata.PN.temp, 
+        features_list = features.plot.pn,  # replace with your actual features list
+        output_prefix = paste0("clustering_", res_label)
+    )
+    
+    # Store results
+    all_results[[res_label]] <- results
+}
+
+# Combine all cluster statistics into one dataframe for comparison
+combined_stats <- do.call(rbind, lapply(names(all_results), function(res) {
+    df <- all_results[[res]]
+    df$resolution <- res
+    return(df)
+}))
+
+# Write combined statistics to file
+write.csv(combined_stats, "all_resolutions_comparison.csv")
+
+# Create a summary plot of number of clusters per resolution
+resolution_summary <- data.frame(
+    resolution = names(all_results),
+    n_clusters = sapply(all_results, function(x) length(unique(x$cluster)))
+)
+
+ggplot(resolution_summary, aes(x = resolution, y = n_clusters)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    theme_minimal() +
+    labs(x = "Resolution", y = "Number of Clusters") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("resolution_comparison_nclusters.pdf")
+#resolution 1 is best
+```
+
+```{r}
+#remove low-quality clusters based on features counts lower than 1000 and no markers
+scdata.PN <- scdata.PN.mapped %>% 
+  RunUMAP(reduction = "harmony", dims = 1:30) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 1)
+
+analyze_seurat_clusters(scdata.PN, features.plot.pn, "PN")
+
+scdata.PN.2 <- subset(scdata.PN,
+                      RNA_snn_res.1 != "0"
+                      & RNA_snn_res.1 != "2"
+                      & RNA_snn_res.1 != "19"
+                      & RNA_snn_res.1 != "37"
+                      & RNA_snn_res.1 != "38")
+
+#Redo PCA since we removed cells
+scdata.PN.2 <- RunPCA(scdata.PN.2, npcs = 50)
+
+
+#Neighbors and UMAP based on new harmony
+scdata.PN.2 <- FindNeighbors(scdata.PN.2,
+                                   reduction = "harmony",
+                                   dims = 1:30,
+                                   k.param = 30,
+                                   annoy.metric = "cosine")
+
+scdata.PN.2 <- RunUMAP(scdata.PN.2,
+                             reduction = "harmony",
+                             dims = 1:30,
+                             metric = "cosine")
+
+# Find clusters again
+scdata.PN.2 <- FindClusters(scdata.PN.2, 
+                                  resolution = 1)
+
+
+DimPlot(scdata.PN.2, 
+        reduction = "umap", 
+        group.by = "RNA_snn_res.1",
+        label = TRUE,                # Enable labels
+        label.size = 5,              # Make labels larger for better visibility
+        repel = FALSE,               # Disable label repulsion to keep labels centered
+        label.box = FALSE,           # Remove boxes around labels
+        pt.size = 0.5) +             # Adjust point size as needed
+    NoLegend()
+ggsave("/data/R/CSeq_reanalyze/connectome_seq_figures_Joe/PN.cluster.pdf") 
+```
+
+```{r}
+# First, let's check the cell count for each mapmycell_subclass group
+annotation_counts <- table(scdata.PN.2$mapmycell_filtered)
+
+# Let's set a threshold (for example, keeping only groups with at least 200 cells)
+abundant_annotations <- names(annotation_counts[annotation_counts >= 200])
+
+# Create a filtered Seurat object keeping only the abundant populations
+scdata.PN.3 <- subset(scdata.PN.2, 
+                         subset = mapmycell_filtered %in% abundant_annotations)
+
+# Create the UMAP plot with centered labels for abundant populations
+umap_coords <- as.data.frame(Embeddings(scdata.PN.3, "umap"))
+umap_coords$mapmycell_filtered <- scdata.PN.3$mapmycell_filtered
+
+# Create the cleaned-up plot
+DimPlot(scdata.PN.3, 
+        reduction = "umap", 
+        group.by = "mapmycell_filtered",
+        label = TRUE,                # Enable labels
+        label.size = 5,              # Make labels larger for better visibility
+        repel = FALSE,               # Disable label repulsion to keep labels centered
+        label.box = FALSE,           # Remove boxes around labels
+        pt.size = 0.5) +             # Adjust point size as needed
+    NoLegend()
+    ggsave("PN.AI.pdf")  
+    
+
+```
+
+```{r}
+# First, let's create a cross-tabulation of clusters and annotations
+library(pheatmap)
+library(dplyr)
+
+# Create a contingency table
+cluster_annotation_matrix <- table(scdata.PN.3$RNA_snn_res.1, 
+                                 scdata.PN.3$mapmycell_filtered)
+
+# Convert to proportions within each cluster
+prop_matrix <- sweep(cluster_annotation_matrix, 1, 
+                    rowSums(cluster_annotation_matrix), "/")
+
+# Using log-transformed counts
+p<-pheatmap(log1p(cluster_annotation_matrix),
+         display_numbers = TRUE,
+         number_format = "%.1f",
+         fontsize_number = 7,
+         fontsize = 8,
+         main = "Cluster-Annotation Log-Transformed Counts",
+         angle_col = 45,
+         clustering_method = "ward.D2")
+   ggsave("PN-AI-celltype.pdf", p, width = 15, height = 6)
+   
+ DotPlot(scdata.PN.2, 
+                  features = features.plot.pn,
+                  cols = c("lightgrey", "red"),
+                  dot.scale = 8) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggsave("pn_markers_dotplot.pdf", 
+           width = 15, 
+           height = 6)    
+```
+#reassign outlying cells to the correct cluster
+```{r}
+scdata.PN.4 <- scdata.PN.2
+# Get UMAP coordinates
+umap_coords <- Embeddings(scdata.PN.4, "umap")
+
+# Calculate cluster centers
+cluster_centers <- aggregate(umap_coords, by=list(Idents(scdata.PN.4)), FUN=mean)
+
+# Function to calculate distance between a point and cluster center
+calc_distance <- function(point, center) {
+    sqrt(sum((point - center)^2))
+}
+
+# Identify outliers and reassign them
+flag = 0
+new_identities <- Idents(scdata.PN.4)
+for(cluster in unique(Idents(scdata.PN.4))) {
+    # Get cells in current cluster
+    cluster_cells <- Idents(scdata.PN.4) == cluster
+    cluster_coords <- umap_coords[cluster_cells, ]
+    
+    # Calculate distances to current cluster center
+    current_center <- cluster_centers[cluster_centers$Group.1 == cluster, 2:3]
+    cluster_distances <- sapply(1:nrow(cluster_coords), function(i) {
+        calc_distance(cluster_coords[i,], as.numeric(current_center))
+    })
+    
+    # Identify outliers using MAD
+    mad_score <- abs(cluster_distances - median(cluster_distances)) / mad(cluster_distances)
+    outlier_cells <- which(cluster_cells)[mad_score > 5]
+    flag <- flag + length(outlier_cells)
+    # For each outlier, find the nearest cluster
+    if(length(outlier_cells) > 0) {
+        for(cell in outlier_cells) {
+            # Calculate distance to all cluster centers
+            distances_to_centers <- sapply(1:nrow(cluster_centers),function(i) {
+                calc_distance(umap_coords[cell,], as.numeric(cluster_centers[i, 2:3]))
+            })
+            # Assign to nearest cluster
+            new_cluster <- cluster_centers$Group.1[which.min(distances_to_centers)]
+            new_identities[cell] <- new_cluster
+        }
+    }
+}
+
+
+test <- sum(new_identities != Idents(scdata.PN.2))
+print(test)
+
+
+# Update cell identities
+Idents(scdata.PN.4) <- new_identities
+
+# Plot to check results
+DimPlot(scdata.PN.4, reduction = "umap", label = TRUE)
+    ggsave("PN.umap.pdf")  
+```
+
+
+```{r}
+pn.cluster <- c( "Hoxb5 Glut", #0
+                         "Fat2 Glut", #1
+                         "Hoxb5 Glut", #2
+                         "Fat2 Glut", #3
+                         "Fat2 Glut", #4
+                         "ODC", #5
+                         "Fat2 Glut", #6
+                         "Hoxb5 Glut", #7
+                         "ODC", #8
+                         "Astro", #9
+                         "Fat2 Glut", #10
+                         "Hoxb5 Glut", #11
+                         "Gata3 Gly-Gaba",  #12
+                         "Hoxb5 Glut",  #13
+                         "Otp Pax3 Gaba", #14
+                         "Gata3 Gly-Gaba", #15
+                         "OPC", #16
+                         "Endo", #17
+                         "Gata3 Gly-Gaba", #18
+                         "Astro", #19
+                         "ODC", #20
+                         "Endo", #21
+                         "Tph2 Glut-Sero",  #22
+                         "Fat2 Glut",  #23
+                         "Gata3 Gly-Gaba", #24
+                         "Onecut1 Gaba", #25
+                         "Hoxb5 Glut", #26
+                         "Astro", #27
+                         "Micro", #28
+                         "Macro", #29
+                         "Astro", #30
+                         "Astro", #31
+                         "Hoxb5 Glut", #32
+                         "Hoxb5 Glut" #33
+                         )
+names(pn.cluster) <- levels(scdata.PN.4)
+scdata.PN.4 <- RenameIdents(scdata.PN.4, pn.cluster)
+DimPlot(scdata.PN.4, 
+        reduction = "umap", 
+        label = FALSE,
+        pt.size = 0.5,
+        alpha = 0.7,
+        raster = FALSE,
+        cols = custom_colors.pn.all,
+        order = rev(names(custom_colors.pn.all))) +
+    NoLegend() +
+    theme_classic() +
+    labs(x = "UMAP 1", y = "UMAP 2") +
+    theme(
+        axis.line = element_line(color = "black", size = 1),
+        axis.ticks = element_line(color = "black", size = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 14, color = "black"),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        legend.text = element_text(size = 25),
+        plot.margin = margin(20, 20, 20, 20),
+        aspect.ratio = 1
+    )
+
+ggsave("PN-AI-umap.pdf", 
+       width = 10, height = 10,
+       dpi = 300,
+       device = cairo_pdf)
+```
+
+```{r}
+# Get cell counts and create custom order 
+cell_counts <- table(Idents(scdata.PN.4))
+cell_order <- c("Fat2 Glut", "Hoxb5 Glut", "Gata3 Gly-Gaba", "Onecut1 Gaba","Otp Pax3 Gaba", "Tph2 Glut-Sero","ODC","OPC","Astro", "Endo","Micro","Macro")
+
+# Reorder the levels of the identity factor
+scdata.PN.4$celltype <- factor(Idents(scdata.PN.4), levels = cell_order)
+Idents(scdata.PN.4) <- scdata.PN.4$celltype
+
+DotPlot(object = scdata.PN.4, 
+        features = features.plot.pn, 
+        scale = TRUE,
+        scale.by = 'radius') + 
+    theme(axis.text.x = element_text(angle = 45, 
+                                   vjust = 1, 
+                                   hjust = 1,
+                                   margin = margin(t = 10, r = 0),
+                                   size = 16),    # Larger font for gene labels
+          axis.text.y = element_text(size = 16),  # Larger font for cell type labels
+          legend.text = element_text(size = 14),  # Larger font for legend
+          legend.title = element_text(size = 16), # Larger font for legend title
+          plot.margin = margin(b = 20, r = 20))
+
+ggsave("pons-mRNA-marker.pdf", width = 12, height = 8, device = "pdf", useDingbats = FALSE)
+```
+
+
+#process CN
+```{r}
+#optimize CN cluster resolution
+# Define a range of resolutions to test
+resolutions <- seq(0.4, 0.8, by = 0.1)
+
+# Create a list to store results
+all_results <- list()
+
+scdata.CB.mapped.1 <- scdata.CB.mapped %>% 
+  RunUMAP(reduction = "harmony", dims = 1:30) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30)
+
+
+# Loop through resolutions
+for(res in resolutions) {
+    # Create a clean label for this resolution
+    res_label <- sprintf("res%.2f", res)
+    
+    # Run clustering at this resolution
+    scdata.CB.temp <- FindClusters(scdata.CB.mapped.1, resolution = res)
+    
+    # Run your analysis function
+    results <- analyze_seurat_clusters(
+        scdata.CB.temp, 
+        features_list = features.plot.cn,  # replace with your actual features list
+        output_prefix = paste0("clustering_", res_label)
+    )
+    
+    # Store results
+    all_results[[res_label]] <- results
+}
+
+# Combine all cluster statistics into one dataframe for comparison
+combined_stats <- do.call(rbind, lapply(names(all_results), function(res) {
+    df <- all_results[[res]]
+    df$resolution <- res
+    return(df)
+}))
+
+# Write combined statistics to file
+write.csv(combined_stats, "all_resolutions_comparison.csv")
+
+# Create a summary plot of number of clusters per resolution
+resolution_summary <- data.frame(
+    resolution = names(all_results),
+    n_clusters = sapply(all_results, function(x) length(unique(x$cluster)))
+)
+
+ggplot(resolution_summary, aes(x = resolution, y = n_clusters)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    theme_minimal() +
+    labs(x = "Resolution", y = "Number of Clusters") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("resolution_comparison_nclusters.pdf")
+```
+
+```{r}
+#remove low-quality clusters based on features counts lower than 1000 and no markers
+scdata.CB <- scdata.CB.mapped %>% 
+  RunUMAP(reduction = "harmony", dims = 1:30) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>% 
+  FindClusters(resolution = 0.4)
+
+analyze_seurat_clusters(scdata.CB, features.plot.cn, "CN")
+
+scdata.CB.2<-subset(scdata.CB, 
+                    RNA_snn_res.0.4 != "0"
+                    & RNA_snn_res.0.4 != "19"
+                    & RNA_snn_res.0.4 != "22"
+                    & RNA_snn_res.0.4 != "23")
+#Redo PCA since we removed cells
+scdata.CB.2 <- RunPCA(scdata.CB.2, npcs = 50)
+
+
+#Neighbors and UMAP based on new harmony
+scdata.CB.2 <- FindNeighbors(scdata.CB.2,
+                                   reduction = "harmony",
+                                   dims = 1:30,
+                                   k.param = 30,
+                                   annoy.metric = "cosine")
+
+scdata.CB.2 <- RunUMAP(scdata.CB.2,
+                             reduction = "harmony",
+                             dims = 1:30,
+                             metric = "cosine")
+
+# Find clusters again
+scdata.CB.2 <- FindClusters(scdata.CB.2, 
+                                  resolution = 0.4)
+
+
+DimPlot(scdata.CB.2, 
+        reduction = "umap", 
+        group.by = "RNA_snn_res.0.4",
+        label = TRUE,                # Enable labels
+        label.size = 5,              # Make labels larger for better visibility
+        repel = FALSE,               # Disable label repulsion to keep labels centered
+        label.box = FALSE,           # Remove boxes around labels
+        pt.size = 0.5) +             # Adjust point size as needed
+    NoLegend()
+ggsave("CN.clusters.pdf") 
+```
+
+```{r}
+# First, let's check the cell count for each mapmycell_subclass group
+annotation_counts <- table(scdata.CB.2$mapmycell_filtered)
+
+# Let's set a threshold (for example, keeping only groups with at least 200 cells)
+abundant_annotations <- names(annotation_counts[annotation_counts >= 200])
+
+# Create a filtered Seurat object keeping only the abundant populations
+scdata.CB.3 <- subset(scdata.CB.2, 
+                         subset = mapmycell_subclass %in% abundant_annotations)
+
+# Create the UMAP plot with centered labels for abundant populations
+umap_coords <- as.data.frame(Embeddings(scdata.CB.3, "umap"))
+umap_coords$mapmycell_filtered <- scdata.CB.3$mapmycell_filtered
+
+# Create the cleaned-up plot
+DimPlot(scdata.CB.3, 
+        reduction = "umap", 
+        group.by = "mapmycell_filtered",
+        label = TRUE,                # Enable labels
+        label.size = 5,              # Make labels larger for better visibility
+        repel = FALSE,               # Disable label repulsion to keep labels centered
+        label.box = FALSE,           # Remove boxes around labels
+        pt.size = 0.5) +             # Adjust point size as needed
+    NoLegend()
+    ggsave("CN.AI.pdf")    
+```
+
+```{r}
+# First, let's create a cross-tabulation of clusters and annotations
+library(pheatmap)
+library(dplyr)
+
+# Create a contingency table
+cluster_annotation_matrix <- table(scdata.CB.3$RNA_snn_res.0.4, 
+                                 scdata.CB.3$mapmycell_filtered)
+
+# Convert to proportions within each cluster
+prop_matrix <- sweep(cluster_annotation_matrix, 1, 
+                    rowSums(cluster_annotation_matrix), "/")
+
+# Using log-transformed counts
+p1<-pheatmap(log1p(cluster_annotation_matrix),
+         display_numbers = TRUE,
+         number_format = "%.1f",
+         fontsize_number = 7,
+         fontsize = 8,
+         main = "Cluster-Annotation Log-Transformed Counts",
+         angle_col = 45,
+         clustering_method = "ward.D2")
+   ggsave("CN-AI-celltype.pdf", p1, width = 12, height = 6)
+ 
+   DotPlot(scdata.CB.2, 
+                  features = features.plot.cn,
+                  cols = c("lightgrey", "red"),
+                  dot.scale = 8) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggsave("cn_markers_dotplot.pdf", 
+           width = 15, 
+           height = 6)    
+```
+#reassign outlying cells to the correct cluster
+```{r}
+scdata.CB.4<-scdata.CB.2
+# Get UMAP coordinates
+umap_coords <- Embeddings(scdata.CB.4, "umap")
+
+# Calculate cluster centers
+cluster_centers <- aggregate(umap_coords, by=list(Idents(scdata.CB.4)), FUN=mean)
+
+# Function to calculate distance between a point and cluster center
+calc_distance <- function(point, center) {
+    sqrt(sum((point - center)^2))
+}
+
+# Identify outliers and reassign them
+new_identities <- Idents(scdata.CB.4)
+for(cluster in unique(Idents(scdata.CB.4))) {
+    # Get cells in current cluster
+    cluster_cells <- Idents(scdata.CB.4) == cluster
+    cluster_coords <- umap_coords[cluster_cells, ]
+    
+    # Calculate distances to current cluster center
+    current_center <- cluster_centers[cluster_centers$Group.1 == cluster, 2:3]
+    cluster_distances <- sapply(1:nrow(cluster_coords), function(i) {
+        calc_distance(cluster_coords[i,], as.numeric(current_center))
+    })
+    
+    # Identify outliers using MAD
+    mad_score <- abs(cluster_distances - median(cluster_distances)) / mad(cluster_distances)
+    outlier_cells <- which(cluster_cells)[mad_score > 5]
+    
+    # For each outlier, find the nearest cluster
+    if(length(outlier_cells) > 0) {
+        for(cell in outlier_cells) {
+            # Calculate distance to all cluster centers
+            distances_to_centers <- sapply(1:nrow(cluster_centers), function(i) {
+                calc_distance(umap_coords[cell,], as.numeric(cluster_centers[i, 2:3]))
+            })
+            # Assign to nearest cluster
+            new_cluster <- cluster_centers$Group.1[which.min(distances_to_centers)]
+            new_identities[cell] <- new_cluster
+        }
+    }
+}
+
+# Update cell identities
+Idents(scdata.CB.4) <- new_identities
+
+# Plot to check results
+DimPlot(scdata.CB.4, reduction = "umap", label = TRUE)
+    ggsave("CN.umap.pdf")    
+
+```
+
+```{r}
+cn.cluster <- c(         "Granule", #0
+                         "Granule", #1
+                         "Purkinje", #2
+                         "MLI1", #3
+                         "Bergmann", #4
+                         "MLI2", #5
+                         "Choroid", #6
+                         "Golgi", #7
+                         "Granule", #8
+                         "PLI", #9
+                         "Purkinje", #10
+                         "Astro", #11
+                         "MLI1",  #12
+                         "PLI",  #13
+                         "ODC", #14
+                         "Endo", #15
+                         "Macro", #16
+                         "Micro", #17,
+                         "Granule", #18
+                         "UBC", #19
+                         "OPC", #20
+                         "Epen" #21
+                       )
+names(cn.cluster) <- levels(scdata.CB.4)
+scdata.CB.4 <- RenameIdents(scdata.CB.4,cn.cluster)
+# Create clean plot without labels
+DimPlot(scdata.CB.4, 
+        reduction = "umap", 
+        label = FALSE,
+        pt.size = 0.5,
+        alpha = 0.7,
+        raster = FALSE,
+        cols = custom_colors.cn.all,
+        order = rev(names(custom_colors.cn.all))) +
+    NoLegend() +
+    theme_classic() +
+    labs(x = "UMAP 1", y = "UMAP 2") +
+    theme(
+        axis.line = element_line(color = "black", size = 1),
+        axis.ticks = element_line(color = "black", size = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.title = element_text(size = 16, face = "bold"),
+        axis.text = element_text(size = 14, color = "black"),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        legend.text = element_text(size = 25),
+        plot.margin = margin(20, 20, 20, 20),
+        aspect.ratio = 1
+    )
+
+ggsave("CN-AI-umap.pdf", 
+       width = 10, height = 10,
+       dpi = 300,
+       device = cairo_pdf)
+```
+
+
+```{r}
+# Get cell counts and create custom order 
+cell_counts <- table(Idents(scdata.CB.4))
+cell_order <- c("Granule", "Purkinje", "MLI1", "MLI2", "PLI", "Golgi", "UBC", 
+                "ODC", "OPC","Bergmann", "Astro", "Micro", "Macro", "Epen", 
+                "Choroid", "Endo")
+# Reorder the levels of the identity factor
+scdata.CB.4$celltype <- factor(Idents(scdata.CB.4), levels = cell_order)
+Idents(scdata.CB.4) <- scdata.CB.4$celltype
+
+DotPlot(object = scdata.CB.4, 
+        features = features.plot.cn, 
+        scale = TRUE,
+        scale.by = 'radius') + 
+    theme(axis.text.x = element_text(angle = 45, 
+                                   vjust = 1, 
+                                   hjust = 1,
+                                   margin = margin(t = 10, r = 0),
+                                   size = 16),    # Larger font for gene labels
+          axis.text.y = element_text(size = 16),  # Larger font for cell type labels
+          legend.text = element_text(size = 14),  # Larger font for legend
+          legend.title = element_text(size = 16), # Larger font for legend title
+          plot.margin = margin(b = 20, r = 20))
+
+ggsave("cere-mRNA-marker.pdf", width = 12, height = 8, device = "pdf", useDingbats = FALSE)
+```
+#save the cell type info
+```{r}
+# Get both cluster and cell-type annotations
+celltype.pons.new <- data.frame(
+    cluster_type = Idents(scdata.PN.4),
+    cell_type = scdata.PN.4$mapmycell_subclass
+)
+
+celltype.cere.new <- data.frame(
+    cluster_type = Idents(scdata.CB.4),
+    cell_type = scdata.CB.4$mapmycell_subclass
+)
+
+# Save annotations
+save(celltype.pons.new, celltype.cere.new, file = "celltype_annotations.rdata")
+```
+
+
+```{r, echo=FALSE}
+table(scdata.PN.4@active.ident,scdata.PN.4@meta.data$orig.ident)
+```
+
+```{r, echo=FALSE}
+table(scdata.CB.4@active.ident,scdata.CB.4@meta.data$orig.ident)
+```
+#barcode plots
+```{r}
+# Set up Synbar assay and normalize
+DefaultAssay(scdata.PN.4) <- 'Synbar'
+scdata.PN.4 <- NormalizeData(object = scdata.PN.4, 
+                            normalization.method = "LogNormalize", 
+                            scale.factor = 10000)
+scdata.PN.4 <- ScaleData(object = scdata.PN.4)
+
+# Create individual plots
+p1 <- FeaturePlot(scdata.PN.4, 
+                  reduction = "umap", 
+                  features = 'SynBarpost',
+                  cols = c('lightgrey', "firebrick")) +
+    theme(aspect.ratio = 1)  # Force square aspect ratio
+
+p2 <- FeaturePlot(scdata.PN.4, 
+                  reduction = "umap", 
+                  features = 'SynBarpre',
+                  cols = c('lightgrey', "firebrick")) +
+    theme(aspect.ratio = 1)  # Force square aspect ratio
+
+# Combine plots using patchwork
+library(patchwork)
+combined_plot <- p2 + p1 + plot_layout(ncol = 2)
+
+# Save with square dimensions
+ggsave("pons-Synbar-levels.pdf", 
+       combined_plot,
+       width = 10,     # Total width
+       height = 5,     # Height to maintain square aspect for each plot
+       device = "pdf", 
+       useDingbats = FALSE)
+
+# Reset assay back to RNA
+DefaultAssay(scdata.PN.4) <- 'RNA'
+```
+
+```{r}
+# Set up Synbar assay and normalize
+DefaultAssay(scdata.CB.4) <- 'Synbar'
+scdata.CB.4 <- NormalizeData(object = scdata.CB.4, 
+                           normalization.method = "LogNormalize", 
+                           scale.factor = 10000)
+scdata.CB.4 <- ScaleData(object = scdata.CB.4)
+
+# Create individual plots
+p1 <- FeaturePlot(scdata.CB.4, 
+                 reduction = "umap", 
+                 features = 'SynBarpost',
+                 cols = c('lightgrey', "firebrick")) +
+   theme(aspect.ratio = 1)  # Force square aspect ratio
+
+p2 <- FeaturePlot(scdata.CB.4, 
+                 reduction = "umap", 
+                 features = 'SynBarpre',
+                 cols = c('lightgrey', "firebrick")) +
+   theme(aspect.ratio = 1)  # Force square aspect ratio
+
+# Combine plots using patchwork
+library(patchwork)
+combined_plot <- p2 + p1 + plot_layout(ncol = 2)
+
+# Save with square dimensions
+ggsave("cere-Synbar-levels.pdf", 
+      combined_plot,
+      width = 10,     # Total width
+      height = 5,     # Height to maintain square aspect for each plot
+      device = "pdf", 
+      useDingbats = FALSE)
+
+# Reset assay back to RNA
+DefaultAssay(scdata.CB.4) <- 'RNA'
+```
+#output the neuronal barcodes
+```{r}
+# After examining the plots and stats, you can specify which clusters are neurons
+pn_neuron_clusters <- c("Fat2 Glut", "Hoxb5 Glut", "Gata3 Gly-Gaba", "Onecut1 Gaba","Otp Pax3 Gaba","Tph2 Glut-Sero")  
+cn_neuron_clusters <- c("Granule", "UBC", "Purkinje", "MLI1", "MLI2", "Golgi", "PLI")  
+
+# Extract barcodes using RNA_snn.res.X clusters
+# First get the cluster IDs that correspond to these cell types
+pn_barcodes <- colnames(scdata.PN.4)[Idents(scdata.PN.4) %in% pn_neuron_clusters]
+cn_barcodes <- colnames(scdata.CB.4)[Idents(scdata.CB.4) %in% cn_neuron_clusters]
+
+# Save barcodes
+writeLines(pn_barcodes, "pn_neuron_barcodes.txt")
+writeLines(cn_barcodes, "cn_neuron_barcodes.txt")
+```
