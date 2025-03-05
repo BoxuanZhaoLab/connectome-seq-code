@@ -1,0 +1,1660 @@
+---
+title: "new_match_Joe_022825"
+output: html_document
+date: "2025-02-28"
+---
+(add this: )
+#load raw barcode reads data
+PN1<-read.table('pons.pre.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F, fill = TRUE )
+CN1<-read.table('cere.post.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F,fill = TRUE )
+s1.post<-read.table('post.S.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s1.pre<-read.table('pre.S.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+
+### Remove wrong bam lines
+PN1<-PN1[!grepl('CY:Z',PN1$V2),]
+CN1<-CN1[!grepl('CY:Z',CN1$V2),]
+s1.post<-s1.post[!grepl('CY:Z',s1.post$V2),]
+s1.pre<-s1.pre[!grepl('CY:Z',s1.pre$V2),]
+
+#for Nuc barcode assignment, when one N30 present in multiple Nuc, only assign to top Nuc when top count is >a certain fold than second top, otherwise discard this N30. (avoid collision and missed true Nuc)
+PN1.no.1<-PN1 %>% group_by(V1,V2) %>% summarize(totalcount=sum(V4))
+
+#main function for matching at different hamm distance
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(fuzzyjoin)
+library(tidyr)
+library(pheatmap)
+library(stringdist)
+library("Seurat")
+library("doParallel")
+library(data.table)  # Package for fast data manipulation
+
+library(parallel)    # Package for parallel processing to speed up calculations
+library(tidyverse)
+library(ggnewscale)
+library(pheatmap)
+library(ggalluvial)
+library(ggrepel)
+`%notin%` <- Negate(`%in%`)
+every_nth = function(n) {
+  return(function(x) {x[c(TRUE, rep(FALSE, n - 1))]})
+}
+```
+#main function for matching at different hamm distance
+```{r,echo = FALSE}
+#' Calculate Hamming distance between sequences efficiently
+
+#' Hamming distance is the number of positions at which two sequences differ
+
+hamming_distance_vec <- function(query_prefix, ref_prefixes) {
+
+    # Split the query sequence into individual characters
+
+    query_chars <- strsplit(query_prefix, '')[[1]]
+
+    
+
+    # Split all reference sequences into individual characters
+
+    ref_chars_list <- strsplit(ref_prefixes, '')
+
+    
+
+    # Compare query against each reference sequence and count differences
+
+    # vapply is a faster version of sapply that requires specifying the output type
+
+    vapply(ref_chars_list, function(ref_chars) 
+
+        sum(query_chars != ref_chars), numeric(1))
+
+}
+
+#' Choose the best match when multiple matches are found
+
+#' Selection is based on totalcount (frequency) and celltype information
+
+select_best_match <- function(candidates) {
+
+    
+  # If only one candidate, return its index
+
+    if (nrow(candidates) == 1) return(1)
+
+    
+
+    # Find the highest totalcount among candidates
+
+    max_count <- max(candidates$totalcount, na.rm = TRUE)
+
+    
+
+    # Select all candidates with the highest count
+
+    best_counts <- candidates[candidates$totalcount == max_count,]
+
+    
+
+    # If only one candidate has the highest count, return its index
+
+    if (nrow(best_counts) == 1) {
+
+        return(which(candidates$totalcount == max_count)[1])
+
+    }
+
+    
+
+    # Among candidates with highest count, check which ones have celltype info
+
+    valid_celltype <- !is.na(best_counts$celltype)
+
+    
+
+    # If exactly one candidate has celltype info, choose it
+
+    if (sum(valid_celltype) == 1) {
+
+        return(which(candidates$totalcount == max_count & 
+
+                    !is.na(candidates$celltype))[1])
+
+    }
+
+    
+
+    # If no clear winner, return NA
+
+    return(NA)
+}
+    
+# Find matches between query sequences and reference sequences at a specific distance
+find_matches_at_distance <- function(query_seqs, ref_data, curr_dist, n_cores) {
+    # Convert reference data to data.table format for faster processing
+    ref_data <- as.data.table(ref_data)
+    
+    # Use first 8 characters of sequences for initial filtering
+    prefix_length <- 8
+    ref_prefixes <- substr(ref_data$V1, 1, prefix_length)
+    
+    # Find unique query sequences to avoid redundant processing
+    unique_queries <- unique(query_seqs)
+    # Create mapping between original and unique sequences
+    query_to_unique_idx <- match(query_seqs, unique_queries)
+    
+    # Initialize results table
+    results <- data.table(
+        V1 = query_seqs,              # Original query sequences
+        match = NA_character_,        # Will store matching reference sequences
+        hamming = NA_character_       # Will store hamming distances
+    )
+    
+    # Handle exact matches (distance = 0) differently for efficiency
+    if (curr_dist == 0) {
+        # Find exact matches using fast vector matching
+        matches <- match(unique_queries, ref_data$V1)
+        matched <- !is.na(matches)
+        
+        # Process each unique query and map results back to all instances
+        for (i in seq_along(unique_queries)) {
+            # Show progress every 100 sequences
+            if (i %% 100 == 0) {
+                cat(sprintf("\rProcessed %d/%d unique sequences (exact match)", 
+                          i, length(unique_queries)))
+            }
+            # If match found, update all instances of this sequence
+            if (matched[i]) {
+                results[query_to_unique_idx == i, `:=`(
+                    match = ref_data$V1[matches[i]],
+                    hamming = "0"
+                )]
+            }
+        }
+        cat("\n")
+        return(results)
+    }
+
+    # For non-exact matches, prepare for fuzzy matching
+    query_prefixes <- substr(unique_queries, 1, prefix_length)
+    
+    # Use parallel processing if multiple cores are available
+    if (n_cores > 1) {
+        # Create cluster of worker processes
+        cl <- makeCluster(n_cores)
+        # Ensure cluster is closed when function exits
+        on.exit(stopCluster(cl))
+        
+        # Export required functions to worker processes
+        clusterExport(cl, c("hamming_distance_vec", "select_best_match", "ref_data", "ref_prefixes"), 
+                     envir = environment())
+        # Load required packages in worker processes
+        clusterEvalQ(cl, {
+            library(data.table)
+        })
+        
+        # Initialize storage for results
+        results_list <- vector("list", length(unique_queries))
+        # Process sequences in chunks for progress reporting
+        chunk_size <- 1000
+        chunks <- split(seq_along(unique_queries), 
+                       ceiling(seq_along(unique_queries)/chunk_size))
+        
+        # Process each chunk in parallel
+        for (chunk_idx in seq_along(chunks)) {
+            chunk <- chunks[[chunk_idx]]
+            # Distribute work across cores using parLapply
+            chunk_results <- parLapply(cl, chunk, function(i) {
+                query <- unique_queries[i]
+                query_prefix <- query_prefixes[i]
+                
+                # Find candidates based on prefix distance
+                prefix_distances <- hamming_distance_vec(query_prefix, ref_prefixes)
+                candidates <- which(prefix_distances <= curr_dist)
+                
+                if (length(candidates) > 0) {
+                    # Calculate full distances for candidates
+                    full_distances <- sapply(ref_data$V1[candidates], function(ref_seq) {
+                        sum(strsplit(query, '')[[1]] != strsplit(ref_seq, '')[[1]])
+                    })
+                    # Find matches at exactly the current distance
+                    matches <- which(full_distances == curr_dist)
+                    
+                    if (length(matches) == 1) {
+                        # Single match found
+                        match_idx <- candidates[matches]
+                        return(list(
+                            match = ref_data$V1[match_idx],
+                            hamming = as.character(curr_dist)
+                        ))
+                    } else if (length(matches) > 1) {
+                        # Multiple matches found, need to select best one
+                        match_candidates <- ref_data[candidates[matches]]
+                        best_match <- select_best_match(match_candidates)
+                        
+                        if (!is.na(best_match)) {
+                            # Best match identified
+                            match_idx <- candidates[matches[best_match]]
+                            return(list(
+                                match = ref_data$V1[match_idx],
+                                hamming = as.character(curr_dist)
+                            ))
+                        } else {
+                            # Cannot determine best match
+                            return(list(
+                                match = "multiple matches found",
+                                hamming = as.character(curr_dist)
+                            ))
+                        }
+                    }
+                }
+                # No matches found
+                return(list(match = NA_character_, hamming = NA_character_))
+            })
+            
+            # Store results for this chunk
+            results_list[chunk] <- chunk_results
+            
+            # Show progress
+            cat(sprintf("\rProcessed %d/%d unique sequences (hamming=%d)", 
+                       min(chunk_idx * chunk_size, length(unique_queries)), 
+                       length(unique_queries),
+                       curr_dist))
+        }
+        cat("\n")
+        
+        # Map results back to all sequences
+        for (i in seq_along(results_list)) {
+            results[query_to_unique_idx == i, `:=`(
+                match = results_list[[i]]$match,
+                hamming = results_list[[i]]$hamming
+            )]
+        }
+    }
+
+    else {
+        # Sequential processing (when parallel processing is not used)
+        for (i in seq_along(unique_queries)) {
+            # Show progress every 100 sequences
+            if (i %% 100 == 0) {
+                cat(sprintf("\rProcessed %d/%d unique sequences (sequential)", 
+                          i, length(unique_queries)))
+            }
+            
+            # Get current query sequence and its prefix
+            query <- unique_queries[i]
+            query_prefix <- query_prefixes[i]
+            
+            # Calculate distances between query prefix and all reference prefixes
+            prefix_distances <- hamming_distance_vec(query_prefix, ref_prefixes)
+            # Find candidates that are within our distance threshold
+            candidates <- which(prefix_distances <= curr_dist)
+            
+            if (length(candidates) > 0) {
+                # Calculate full Hamming distances for promising candidates
+                full_distances <- sapply(ref_data$V1[candidates], function(ref_seq) {
+                    sum(strsplit(query, '')[[1]] != strsplit(ref_seq, '')[[1]])
+                })
+                # Find matches at exactly the current distance
+                matches <- which(full_distances == curr_dist)
+                
+                if (length(matches) == 1) {
+                    # Single match found - update results
+                    match_idx <- candidates[matches]
+                    results[query_to_unique_idx == i, `:=`(
+                        match = ref_data$V1[match_idx],
+                        hamming = as.character(curr_dist)
+                    )]
+                } else if (length(matches) > 1) {
+                    # Multiple matches found - need to select best one
+                    match_candidates <- ref_data[candidates[matches]]
+                    best_match <- select_best_match(match_candidates)
+                    
+                    if (!is.na(best_match)) {
+                        # Best match identified - update results
+                        match_idx <- candidates[matches[best_match]]
+                        results[query_to_unique_idx == i, `:=`(
+                            match = ref_data$V1[match_idx],
+                            hamming = as.character(curr_dist)
+                        )]
+                    } else {
+                        # Cannot determine best match - mark for review
+                        results[query_to_unique_idx == i, `:=`(
+                            match = "multiple matches found",
+                            hamming = as.character(curr_dist)
+                        )]
+                    }
+                }
+            }
+        }
+        cat("\n")
+    }       
+        return(results)
+
+}
+
+# Process sample matches and apply filtering
+process_sample_matches <- function(sample_id, pre_matches, post_matches,
+                                 pre_ref_data, post_ref_data, 
+                                 pre_query_data, post_query_data) {
+    
+    # Process POST matches
+    post_matches_all <- post_query_data[post_query_data$V1 %in% post_matches$V1,]
+    post_matches.sorted<-post_matches[!is.na(post_matches$hamming),]
+    post_joined <- left_join(post_matches_all, post_matches.sorted)
+    post_ref_matched <- post_ref_data[match(post_joined$match, post_ref_data$V1),]
+    post_final_match <- data.frame(post_joined, post_ref_matched)
+    post_hamm <- post_final_match %>% 
+        group_by(V2, match, V2.1, totalcount) %>% 
+         summarize(synpcount = sum(V4), .groups = "drop")
+    
+    # Process PRE matches
+    pre_matches_all <- pre_query_data[pre_query_data$V1 %in% pre_matches$V1,]
+    pre_matches.sorted<-pre_matches[!is.na(pre_matches$hamming),]
+    pre_joined <- left_join(pre_matches_all, pre_matches.sorted)
+    pre_ref_matched <- pre_ref_data[match(pre_joined$match, pre_ref_data$V1),]
+    pre_final_match <- data.frame(pre_joined, pre_ref_matched)
+    pre_hamm <- pre_final_match %>% 
+        group_by(V2, match, V2.1, totalcount) %>% 
+        summarize(synpcount = sum(V4), .groups = "drop")
+    
+    # Apply filters to both sets
+    filter_matches <- function(matches) {
+        matches %>%
+            filter(V2 != V2.1) %>%
+            group_by(match) %>%
+            mutate(CB_count = length(unique(V2))) %>%
+            filter(CB_count < 100) %>%
+            group_by(V2) %>%
+            mutate(max_count1 = max(synpcount)) %>%
+            filter(synpcount == max_count1) %>%
+            group_by(V2) %>%
+            mutate(max_count2 = max(totalcount)) %>%
+            filter(totalcount == max_count2) %>%
+            group_by(V2, V2.1) %>%
+            filter(n_distinct(match) == n()) %>%
+            ungroup() %>%
+            group_by(V2) %>%
+            filter(n_distinct(V2.1) == 1) %>%
+            ungroup() %>%
+            dplyr::select(-max_count1, -max_count2, -CB_count)
+    }
+    
+    post_filtered <- filter_matches(post_hamm)
+    pre_filtered <- filter_matches(pre_hamm)
+    
+    # Extract final barcodes
+    pre_single_side <- pre_filtered$V2.1 %>% 
+        stringr::str_replace_all("CB:Z:", "")
+    post_single_side <- post_filtered$V2.1 %>% 
+        stringr::str_replace_all("CB:Z:", "")
+    
+    return(list(
+        pre_single_side = pre_single_side,
+        post_single_side = post_single_side,
+        pre_filtered = pre_filtered,
+        post_filtered = post_filtered
+    ))
+}
+```    
+    
+     
+#stage 1: clean up the nuc barcode data    
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+
+filter_neurons <- function(sample_id, 
+                         pn_neuron_barcodes_file = "pn_neuron_barcodes.txt",
+                         cn_neuron_barcodes_file = "cn_neuron_barcodes.txt",
+                         base_path = ".") {
+    
+    # Load neuron barcodes and add the "cseq" prefix to match our data format
+    pn_neuron_barcodes <- readLines(pn_neuron_barcodes_file)
+    cn_neuron_barcodes <- readLines(cn_neuron_barcodes_file)
+    
+    # Load raw data - these are already grouped and summed by V1,V2 with totalcount
+    pn_data <- fread(file.path(base_path, sprintf("cseq%d_PN1.no.1.csv", sample_id)), col.names = c("n", "V1", "V2", "totalcount"))
+    pn_data$n <- NULL
+    pn_data$V2 <- gsub("cseq", "", pn_data$V2)
+    cn_data <- fread(file.path(base_path, sprintf("cseq%d_CN1.no.1.csv", sample_id)), col.names = c("n", "V1", "V2","totalcount"))
+    cn_data$n <- NULL
+    cn_data$V2 <- gsub("cseq", "", cn_data$V2)
+    
+    # Print initial statistics
+    cat(sprintf("\nInitial data statistics for sample %d:\n", sample_id))
+    cat(sprintf("PN data: %d unique N30s, %d unique cell barcodes, %d total rows\n",
+                uniqueN(pn_data$V1), uniqueN(pn_data$V2), nrow(pn_data)))
+    cat(sprintf("CN data: %d unique N30s, %d unique cell barcodes, %d total rows\n",
+                uniqueN(cn_data$V1), uniqueN(cn_data$V2), nrow(cn_data)))
+    
+ # When saving the filtered data, explicitly name columns and drop the row index
+    pn_neurons <- pn_data[pn_data$V2 %in% pn_neuron_barcodes]
+    fwrite(pn_neurons, sprintf("cseq%d_PN.neurons.csv", sample_id), row.names = FALSE)
+    
+    cn_neurons <- cn_data[cn_data$V2 %in% cn_neuron_barcodes]
+    fwrite(cn_neurons, sprintf("cseq%d_CN.neurons.csv", sample_id), row.names = FALSE)
+    
+    # Print filtering statistics
+    cat(sprintf("\nFiltering results:\n"))
+    cat(sprintf("PN neurons: %d unique N30s, %d unique cell barcodes, %d total rows\n",
+                uniqueN(pn_neurons$V1), uniqueN(pn_neurons$V2), nrow(pn_neurons)))
+    cat(sprintf("CN neurons: %d unique N30s, %d unique cell barcodes, %d total rows\n",
+                uniqueN(cn_neurons$V1), uniqueN(cn_neurons$V2), nrow(cn_neurons)))
+    
+  
+    
+    # Create diagnostic plots
+    p1 <- ggplot(data.frame(type = c("All cells", "Neurons"),
+                           count = c(uniqueN(pn_data$V1), uniqueN(pn_neurons$V1))),
+                aes(x = type, y = count, fill = type)) +
+        geom_bar(stat = "identity") +
+        geom_text(aes(label = count), vjust = -0.5) +
+        theme_minimal() +
+        ggtitle(sprintf("Sample %d: PN N30 Counts Before/After Neuron Filtering", sample_id))
+    
+    p2 <- ggplot(data.frame(type = c("All cells", "Neurons"),
+                           count = c(uniqueN(cn_data$V1), uniqueN(cn_neurons$V1))),
+                aes(x = type, y = count, fill = type)) +
+        geom_bar(stat = "identity") +
+        geom_text(aes(label = count), vjust = -0.5) +
+        theme_minimal() +
+        ggtitle(sprintf("Sample %d: CN N30 Counts Before/After Neuron Filtering", sample_id))
+    
+    ggsave(sprintf("cseq%d_PN_neuron_filtering.pdf", sample_id), p1)
+    ggsave(sprintf("cseq%d_CN_neuron_filtering.pdf", sample_id), p2)
+    
+    return(list(pn = pn_neurons, cn = cn_neurons))
+}
+
+disambiguate_assignments <- function(sample_id) {
+    # Load the neuron-filtered data
+    pn_neurons <- fread(sprintf("cseq%d_PN.neurons.csv", sample_id))
+    cn_neurons <- fread(sprintf("cseq%d_CN.neurons.csv", sample_id))
+    
+    # Print column names to verify our data structure
+    cat("\nColumns in input data:")
+    cat("\nPN columns:", paste(names(pn_neurons), collapse=", "))
+    cat("\nCN columns:", paste(names(cn_neurons), collapse=", "))
+    
+    # For PN: Keep N30s only where the top count is >5x the second highest
+    pn_filtered <- pn_neurons[, {
+        if (.N == 1) {
+            # If only one assignment, keep it with ALL columns
+            .SD
+        } else {
+            # Multiple assignments - check the ratio
+            sorted_counts <- sort(totalcount, decreasing = TRUE)
+            if (sorted_counts[1] > 5 * sorted_counts[2]) {
+                # Keep all columns for the row with max count
+                .SD[which.max(totalcount)]
+            }
+        }
+    }, by = V1]
+    
+    # For CN: Same logic but with 2x threshold
+    cn_filtered <- cn_neurons[, {
+        if (.N == 1) {
+            .SD
+        } else {
+            sorted_counts <- sort(totalcount, decreasing = TRUE)
+            if (sorted_counts[1] > 2 * sorted_counts[2]) {
+                .SD[which.max(totalcount)]
+            }
+        }
+    }, by = V1]
+    
+    # Verify our output data structure
+    cat("\n\nColumns in filtered data:")
+    cat("\nPN filtered columns:", paste(names(pn_filtered), collapse=", "))
+    cat("\nCN filtered columns:", paste(names(cn_filtered), collapse=", "))
+    
+    # Print detailed disambiguation statistics
+    cat("\n\nDisambiguation results:")
+    cat(sprintf("\nPN data:"))
+    cat(sprintf("\n- Input N30s: %d", uniqueN(pn_neurons$V1)))
+    cat(sprintf("\n- Output N30s: %d", uniqueN(pn_filtered$V1)))
+    cat(sprintf("\n- Kept %.1f%% of N30s", 100 * uniqueN(pn_filtered$V1)/uniqueN(pn_neurons$V1)))
+    
+    cat(sprintf("\n\nCN data:"))
+    cat(sprintf("\n- Input N30s: %d", uniqueN(cn_neurons$V1)))
+    cat(sprintf("\n- Output N30s: %d", uniqueN(cn_filtered$V1)))
+    cat(sprintf("\n- Kept %.1f%% of N30s", 100 * uniqueN(cn_filtered$V1)/uniqueN(cn_neurons$V1)))
+    
+    # Save all columns of the filtered data
+    fwrite(pn_filtered, sprintf("cseq%d_PN.neuron.clean.csv", sample_id))
+    fwrite(cn_filtered, sprintf("cseq%d_CN.neuron.clean.csv", sample_id))
+    
+    return(list(pn = pn_filtered, cn = cn_filtered))
+}
+
+process_nuc <- function(sample_ids = c(1, 25, 31, 34, 35, 36)) {
+    all_results <- list()
+    
+    for(sample_id in sample_ids) {
+        cat(sprintf("\nProcessing sample %d...\n", sample_id))
+        
+        # Step 1: Filter neurons
+        neuron_results <- filter_neurons(sample_id)
+        
+        # Step 2: Disambiguate assignments
+        nuc_results <- disambiguate_assignments(sample_id)
+        
+        # Store results properly for this sample
+        all_results[[as.character(sample_id)]] <- nuc_results
+    }
+    
+    save(all_results, file = "disambiguated_nuc_barcodes.RData")
+    return(all_results)
+}
+results <- process_nuc()
+
+```
+
+
+
+#stage 2: iteratively process all samples and save files and stats
+```{r}
+## Main function to process all samples
+process_all_samples <- function(sample_ids = c(1,25,31,34,35,36),
+                              max_hamming = 3,
+                              output_dir = ".",
+                              n_cores = detectCores() - 1) {
+    
+    # Initialize master summary for statistics
+    master_summary <- data.table(
+        sample_id = integer(),
+        distance = integer(),
+        pre_total = integer(),
+        pre_matched = integer(),
+        pre_review = integer(),
+        post_total = integer(),
+        post_matched = integer(),
+        post_review = integer(),
+        pre_single_side_count = integer(),
+        post_single_side_count = integer(),
+        time = numeric(),
+        pre_new_matches_at_dist = integer(),
+        post_new_matches_at_dist = integer(),
+        pre_remaining = integer(),
+        post_remaining = integer()
+    )
+
+    # Initialize collection lists for all four types of results
+    all_pre_single <- vector("list", max_hamming + 1)
+    all_post_single <- vector("list", max_hamming + 1)
+    all_pre_filtered <- vector("list", max_hamming + 1)
+    all_post_filtered <- vector("list", max_hamming + 1)
+    
+    for(i in 1:(max_hamming + 1)) {
+        all_pre_single[[i]] <- list()
+        all_post_single[[i]] <- list()
+        all_pre_filtered[[i]] <- list()
+        all_post_filtered[[i]] <- list()
+    }
+
+    all_samples_results <- list()
+    
+    for(sample_id in sample_ids) {
+        cat(sprintf("\n\nProcessing sample %d...\n", sample_id))
+        
+        tryCatch({
+            # Load clean neuron data with their column names
+            pn_data <- fread(sprintf("cseq%d_PN.neuron.clean.csv", sample_id))
+            cn_data <- fread(sprintf("cseq%d_CN.neuron.clean.csv", sample_id))
+
+            
+            # Load synapse data
+            synp_pre <- fread(sprintf("cseq%d_synp.pre.clean.csv", sample_id))
+            synp_post <- fread(sprintf("cseq%d_synp.post.clean.csv", sample_id))
+            
+            cat(sprintf("\nInitial sequence counts:"))
+            cat(sprintf("\n- Pre-synaptic sequences: %d", length(unique(synp_pre$V1))))
+            cat(sprintf("\n- Post-synaptic sequences: %d", length(unique(synp_post$V1))))
+            
+            # Initialize processing
+            sample_results <- list()
+            unmatched_pre <- unique(synp_pre$V1)
+            unmatched_post <- unique(synp_post$V1)
+            
+            matchedPre <- data.table(
+                V1 = synp_pre$V1,
+                match = NA_character_,
+                hamming = NA_character_
+            )
+            
+            matchedPost <- data.table(
+                V1 = synp_post$V1,
+                match = NA_character_,
+                hamming = NA_character_
+            )
+            
+            # Process each distance
+            for(curr_dist in 0:max_hamming) {
+                cat(sprintf("\n\nProcessing Hamming distance %d...\n", curr_dist))
+                
+                timing <- system.time({
+                    # Process pre-synaptic sequences
+                    if(length(unmatched_pre) > 0) {
+                        cat(sprintf("\nProcessing %d unmatched pre-synaptic sequences...", 
+                                  length(unmatched_pre)))
+                        
+                        pre_matches <- find_matches_at_distance(
+                            unmatched_pre, pn_data, curr_dist, n_cores
+                        )
+                        matched_idx <- !is.na(pre_matches$match)
+                        pre_new_matches <- sum(matched_idx)
+                        
+                        if(any(matched_idx)) {
+                            idx <- match(pre_matches$V1[matched_idx], matchedPre$V1)
+                            matchedPre[idx, `:=`(
+                                match = pre_matches$match[matched_idx],
+                                hamming = pre_matches$hamming[matched_idx]
+                            )]
+                            unmatched_pre <- setdiff(unmatched_pre, 
+                                                   pre_matches$V1[matched_idx])
+                        }
+                        
+                        cat(sprintf("\nPre-synaptic results:"))
+                        cat(sprintf("\n- New matches found: %d", pre_new_matches))
+                        cat(sprintf("\n- Multiple matches found: %d", 
+                            sum(pre_matches$match == "multiple matches found", na.rm = TRUE)))
+                        cat(sprintf("\n- Remaining unmatched: %d", length(unmatched_pre)))
+                    }
+                    
+                    # Process post-synaptic sequences
+                    if(length(unmatched_post) > 0) {
+                        cat(sprintf("\nProcessing %d unmatched post-synaptic sequences...", 
+                                  length(unmatched_post)))
+                        
+                        post_matches <- find_matches_at_distance(
+                            unmatched_post, cn_data, curr_dist, n_cores
+                        )
+                        matched_idx <- !is.na(post_matches$match)
+                        post_new_matches <- sum(matched_idx)
+                        
+                        if(any(matched_idx)) {
+                            idx <- match(post_matches$V1[matched_idx], matchedPost$V1)
+                            matchedPost[idx, `:=`(
+                                match = post_matches$match[matched_idx],
+                                hamming = post_matches$hamming[matched_idx]
+                            )]
+                            unmatched_post <- setdiff(unmatched_post, 
+                                                    post_matches$V1[matched_idx])
+                        }
+                        
+                        cat(sprintf("\nPost-synaptic results:"))
+                        cat(sprintf("\n- New matches found: %d", post_new_matches))
+                        cat(sprintf("\n- Multiple matches found: %d", 
+                            sum(post_matches$match == "multiple matches found", na.rm = TRUE)))
+                        cat(sprintf("\n- Remaining unmatched: %d", length(unmatched_post)))
+                    }
+                    
+                    cat(sprintf("\n\nProcessing single-side matches..."))
+                    single_side_results <- process_sample_matches(
+                        sample_id = sample_id,
+                        pre_matches = matchedPre,
+                        post_matches = matchedPost,
+                        pre_ref_data = pn_data,
+                        post_ref_data = cn_data,
+                        pre_query_data = synp_pre,
+                        post_query_data = synp_post
+                    )
+                })
+                
+                # Store all four types of results for this sample at this distance
+                all_pre_single[[curr_dist + 1]][[as.character(sample_id)]] <- single_side_results$pre_single_side
+                all_post_single[[curr_dist + 1]][[as.character(sample_id)]] <- single_side_results$post_single_side
+                all_pre_filtered[[curr_dist + 1]][[as.character(sample_id)]] <- single_side_results$pre_filtered
+                all_post_filtered[[curr_dist + 1]][[as.character(sample_id)]] <- single_side_results$post_filtered
+                
+                # Update stats
+                stats <- data.table(
+                    sample_id = sample_id,
+                    distance = curr_dist,
+                    pre_total = length(unique(synp_pre$V1)),
+                    pre_matched = sum(!is.na(matchedPre$match) & 
+                                    matchedPre$match != "multiple matches found"),
+                    pre_review = sum(matchedPre$match == "multiple matches found", 
+                                   na.rm = TRUE),
+                    post_total = length(unique(synp_post$V1)),
+                    post_matched = sum(!is.na(matchedPost$match) & 
+                                     matchedPost$match != "multiple matches found"),
+                    post_review = sum(matchedPost$match == "multiple matches found", 
+                                    na.rm = TRUE),
+                    pre_single_side_count = length(unique(single_side_results$pre_single_side)),
+                    post_single_side_count = length(unique(single_side_results$post_single_side)),
+                    time = timing["elapsed"],
+                    pre_new_matches_at_dist = pre_new_matches,
+                    post_new_matches_at_dist = post_new_matches,
+                    pre_remaining = length(unmatched_pre),
+                    post_remaining = length(unmatched_post)
+                )
+                master_summary <- rbindlist(list(master_summary, stats))
+                
+                cat(sprintf("\n\nSummary for sample %d at distance %d:", sample_id, curr_dist))
+                cat(sprintf("\n- Pre-synaptic single-side matches: %d", stats$pre_single_side_count))
+                cat(sprintf("\n- Post-synaptic single-side matches: %d", stats$post_single_side_count))
+                cat(sprintf("\n- Processing time: %.2f seconds", stats$time))
+                
+                # Save distance-specific results for this sample
+                curr_results <- list(
+                    pre = copy(matchedPre),
+                    post = copy(matchedPost),
+                    single_side = single_side_results
+                )
+                sample_results[[curr_dist + 1]] <- curr_results
+                
+                save(file = file.path(output_dir, 
+                                    sprintf("cseq%d_matched_dist%d.rdata", 
+                                           sample_id, curr_dist)),
+                     list = c("matchedPre", "matchedPost"))
+                
+                # Check if all sequences are matched
+                if(length(unmatched_pre) == 0 && length(unmatched_post) == 0) {
+                    cat(sprintf("\n\nAll sequences matched for sample %d at distance %d\n", 
+                              sample_id, curr_dist))
+                    break
+                }
+            }
+            
+            # Store complete sample results
+            all_samples_results[[as.character(sample_id)]] <- sample_results
+            
+        }, error = function(e) {
+            cat(sprintf("\nError processing sample %d: %s\n", sample_id, e$message))
+        })
+    }
+    
+    # After all samples are processed, combine and save results for each distance
+    for(curr_dist in 0:max_hamming) {
+        if(length(all_pre_filtered[[curr_dist + 1]]) > 0) {
+            # Combine simple character vectors (barcodes)
+            cseq.all.pre.single <- unlist(all_pre_single[[curr_dist + 1]])
+            cseq.all.post.single <- unlist(all_post_single[[curr_dist + 1]])
+            
+            # Combine data frames safely using rbindlist
+            cseq.all.pre.filtered <- rbindlist(all_pre_filtered[[curr_dist + 1]], 
+                                             use.names = TRUE, fill = TRUE)
+            cseq.all.post.filtered <- rbindlist(all_post_filtered[[curr_dist + 1]], 
+                                              use.names = TRUE, fill = TRUE)
+            
+            cat(sprintf("\n\nResults for Hamming distance %d:", curr_dist))
+            cat(sprintf("\n- Pre single-side barcodes: %d", length(cseq.all.pre.single)))
+            cat(sprintf("\n- Post single-side barcodes: %d", length(cseq.all.post.single)))
+            cat(sprintf("\n- Pre filtered rows: %d", nrow(cseq.all.pre.filtered)))
+            cat(sprintf("\n- Post filtered rows: %d", nrow(cseq.all.post.filtered)))
+            
+            # Save all four combined objects for this distance
+            save(cseq.all.pre.single, cseq.all.post.single,
+                 cseq.all.pre.filtered, cseq.all.post.filtered,
+                 file = sprintf("cseq.all.matched.BC.hamm%d.RData", curr_dist))
+        }
+    }
+    
+    # Save final summary
+    save(master_summary, file = file.path(output_dir, "all_samples_summary.rdata"))
+    
+    return(master_summary)
+}
+# Run the analysis
+results <- process_all_samples()
+```
+
+
+#stage 3: now let's attach cell type and generate the plots for each hamm distance, including three versions of connectome maps
+#functions
+```{r}
+# Define the connectome plot functions
+# Version 1: Original clustered connectome, no compression
+analyze_connectome_cluster <- function(csv_filename = "connectome.match.count.csv") {
+  # Import and process data - now reading first column as regular column
+  data.raw <- read.table(file="connectome.match.count.csv", header=T, sep=",", row.names = NULL)
+    colnames(data.raw) <- c("syn","pre","post","celltype.pre","celltype.post","count")  
+  
+  
+  print("Pre cell types:")
+  print(table(data.raw$celltype.pre))
+  print("Post cell types:")
+  print(table(data.raw$celltype.post))
+  
+  # Modified to use correct column indices
+  data.1 <- data.raw[,c(2,3,6)]  # changed indices to match new column structure
+  data.2 <- data.frame(
+      pre_post = paste(data.1$pre, "x", data.1$post, sep=""),
+      count = data.1$count
+  )
+  
+  # Rest of the matrix creation stays the same
+  cell.connection.count <- data.2 %>% 
+      group_by(pre_post) %>% 
+      summarise(total = sum(count)) %>%
+      separate(pre_post, c("pre","post"), "x")
+  
+  cell.connection.count.matrix <- pivot_wider(cell.connection.count, 
+                                            names_from = post, 
+                                            values_from = total, 
+                                            values_fill = 0)
+  
+  # Modified matrix processing
+  matrix_rownames <- cell.connection.count.matrix$pre
+  cell.connection.count.matrix <- as.matrix(cell.connection.count.matrix[,-1])  # Remove pre column
+  rownames(cell.connection.count.matrix) <- matrix_rownames
+  
+  # Annotations remain same but use updated column references if needed
+  col.1 <- cbind(colnames(cell.connection.count.matrix), 
+                 data.raw$celltype.post[match(colnames(cell.connection.count.matrix), data.raw$post)])
+  col.1 <- unique(col.1)
+  mycolannotations <- data.frame(
+      celltype.post = col.1[,2], 
+      row.names = col.1[,1])
+  
+  row.1 <- cbind(rownames(cell.connection.count.matrix), 
+                 data.raw$celltype.pre[match(rownames(cell.connection.count.matrix), data.raw$pre)])
+  row.1 <- unique(row.1)
+  myrowannotations <- data.frame(
+      celltype.pre = row.1[,2],
+      row.names = row.1[,1])
+  
+  # Rest remains the same
+  annotation_colors <- list(
+      celltype.pre = custom_colors.pn,
+      celltype.post = custom_colors.cn
+  )
+  
+  main_plot <- pheatmap(log2(cell.connection.count.matrix + 1),
+                       color = colorRampPalette(c("white", "red"))(100),
+                       scale = "none",
+                       cluster_cols = TRUE,
+                       cluster_rows = TRUE,
+                       clustering_method = "ward.D2",
+                       show_rownames = FALSE,
+                       show_colnames = FALSE,
+                       annotation_row = myrowannotations,
+                       annotation_col = mycolannotations,
+                       annotation_colors = annotation_colors,
+                       annotation_names_row = FALSE,
+                       annotation_names_col = FALSE,
+                       annotation_legend = TRUE,
+                       legend_labels = c("0", "1", "2", "3", "4", "5", "6", "7"),
+                       main = "Matched synaptosome reads (log2 scale)",
+                       annotation_legend_side = "right",
+                       angle_col = 0,
+                       fontsize = 10,
+                       gaps_row = NULL,
+                       gaps_col = NULL)
+  
+  return(list(
+      plot = main_plot,
+      summary = list(
+        pre_nuclei = length(unique(data.raw$pre)),
+        post_nuclei = length(unique(data.raw$post)),
+        synapses = length(unique(data.raw$syn))
+       )
+    ))
+}
+
+
+
+# Version 2: Group by cell types, with outlier compression 
+analyze_connectome <- function(pre_data, post_data, output_csv = TRUE, 
+                             csv_filename = "connectome.match.count.csv", 
+                             outlier_threshold = 4) {
+  # Merge pre and post data
+  pre.match <- pre_data %>% 
+    rename(
+      synp_CB = V2,
+      pre_N30 = match,
+      preNuc_CB = V2.1,
+      preNuc_count = totalcount,
+      presynp_count = synpcount
+    )
+  
+  post.match <- post_data %>% 
+    rename(
+      synp_CB = V2,
+      post_N30 = match,
+      postNuc_CB = V2.1,
+      postNuc_count = totalcount,
+      postsynp_count = synpcount
+    )
+  
+  connectome.match <- merge(pre.match, post.match, by = "synp_CB")
+  
+  # Calculate counts
+  connectome.match.count <- connectome.match %>% 
+    group_by(synp_CB, preNuc_CB, postNuc_CB, celltype.pre, celltype.post) %>% 
+    summarize(totalcount = sum(presynp_count, postsynp_count), .groups = 'drop')
+  
+  if(output_csv) {
+    write.csv(connectome.match.count, csv_filename)
+  }
+  
+  # Read and process data
+  data.raw <- read.csv(csv_filename, row.names = NULL)
+  colnames(data.raw) <- c("syn","pre","post","celltype.pre","celltype.post","count")
+  
+  
+  # Process data for visualization
+  data.1 <- data.raw %>%
+    dplyr::select(pre, post, count)
+  
+  # Create plot data
+  plot_data <- data.raw %>%
+    mutate(
+      celltype.pre = factor(celltype.pre, levels = pre_order),
+      celltype.post = factor(celltype.post, levels = post_order)
+    ) %>%
+    mutate(
+      log2_count = log2(count + 1),
+      compressed_count = pmin(log2_count, outlier_threshold)
+    )
+  
+  # Create mapping for numeric positions
+  pre_mapping <- plot_data %>%
+    dplyr::select(pre, celltype.pre) %>%
+    distinct() %>%
+    arrange(celltype.pre, pre) %>%
+    mutate(pre_num = row_number())
+  
+  post_mapping <- plot_data %>%
+    dplyr::select(post, celltype.post) %>%
+    distinct() %>%
+    arrange(celltype.post, post) %>%
+    mutate(post_num = row_number())
+  
+  # Add numeric positions to plot data
+  plot_data <- plot_data %>%
+    left_join(pre_mapping, by = c("pre", "celltype.pre")) %>%
+    left_join(post_mapping, by = c("post", "celltype.post"))
+  
+  # Create annotation data frames
+  pre_anno <- pre_mapping %>%
+    dplyr::select(pre_num, celltype.pre)
+  
+  post_anno <- post_mapping %>%
+    dplyr::select(post_num, celltype.post)
+  
+  # Calculate dimensions
+  n_pre <- nrow(pre_mapping)
+  n_post <- nrow(post_mapping)
+  
+  # Create main plot
+  main_plot <- ggplot(plot_data) +
+    geom_tile(aes(x = post_num, y = pre_num, fill = compressed_count)) +
+    scale_fill_gradientn(
+      "log2(count + 1)",
+      colors = colorRampPalette(c("white", "red"))(100),
+      limits = c(0, max(plot_data$compressed_count)),
+      breaks = seq(0, ceiling(max(plot_data$compressed_count)), by = 1),
+      labels = function(x) {
+        ifelse(x > outlier_threshold,
+               sprintf("≥%.1f", outlier_threshold),
+               sprintf("%.1f", x))
+      }
+    ) +
+    new_scale_fill() +
+    geom_tile(data = pre_anno,
+              aes(x = 0, y = pre_num, fill = celltype.pre),
+              width = 1) +
+    scale_fill_manual("Pre-synaptic\ncell type", 
+                     values = custom_colors.pn,
+                     breaks = legend_pre_order) +
+    new_scale_fill() +
+    geom_tile(data = post_anno,
+              aes(x = post_num, y = n_pre + 1, fill = celltype.post),
+              height = 1) +
+    scale_fill_manual("Post-synaptic\ncell type", 
+                     values = custom_colors.cn,
+                     breaks = post_order) +
+    scale_x_continuous(limits = c(-0.5, n_post + 0.5)) +
+    scale_y_continuous(limits = c(0.5, n_pre + 1.5)) +
+    theme_minimal() +
+    theme(
+      axis.text = element_blank(),
+      axis.title = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "right",
+      legend.box = "vertical",
+      legend.margin = margin(5, 5, 5, 5),
+      legend.box.margin = margin(10, 10, 10, 10),
+      legend.text = element_text(size = 8),
+      legend.title = element_text(size = 9),
+      legend.key.height = unit(0.5, "cm"),
+      legend.key.width = unit(0.3, "cm"),
+      plot.title = element_text(hjust = 0.5, size = 12),
+      plot.margin = unit(c(1, 1, 1, 1), "cm"),
+      legend.box.spacing = unit(0.2, "cm"),
+      legend.spacing = unit(0.2, "cm")
+    ) +
+    labs(title = "Matched synaptosome reads (log2 scale)")
+  
+  return(list(
+    plot = main_plot,
+    summary = list(
+      pre_nuclei = length(unique(data.raw$pre)),
+      post_nuclei = length(unique(data.raw$post)),
+      synapses = length(unique(data.raw$syn)),
+      max_log2_count = max(plot_data$log2_count),
+      compressed_max = max(plot_data$compressed_count)
+    )
+  ))
+}
+
+# Version 3: Sample-colored version
+analyze_connectome_by_replicate_solid <- function(pre_data, post_data, output_csv = TRUE, 
+                                                csv_filename = "connectome.match.count.csv") {
+  # Merge pre and post data
+  pre.match <- pre_data %>% 
+    rename(
+      synp_CB = V2,
+      pre_N30 = match,
+      preNuc_CB = V2.1,
+      preNuc_count = totalcount,
+      presynp_count = synpcount
+    )
+  
+  post.match <- post_data %>% 
+    rename(
+      synp_CB = V2,
+      post_N30 = match,
+      postNuc_CB = V2.1,
+      postNuc_count = totalcount,
+      postsynp_count = synpcount
+    )
+  
+  connectome.match <- merge(pre.match, post.match, by = "synp_CB")
+  
+  connectome.match.count <- connectome.match %>% 
+    group_by(synp_CB, preNuc_CB, postNuc_CB, celltype.pre, celltype.post) %>% 
+    summarize(totalcount = sum(presynp_count, postsynp_count), .groups = 'drop')
+  
+  if(output_csv) {
+    write.csv(connectome.match.count, csv_filename)
+  }
+  
+  data.raw <- read.csv(csv_filename, row.names = NULL)
+  colnames(data.raw) <- c("syn","pre","post","celltype.pre","celltype.post","count")
+  
+  data.raw$celltype.pre[is.na(data.raw$celltype.pre) | data.raw$celltype.pre == ""] <- "unknown"
+  data.raw$celltype.post[is.na(data.raw$celltype.post) | data.raw$celltype.post == ""] <- "unknown"
+  
+  plot_data <- data.raw %>%
+    mutate(replicate = str_extract(pre, "^\\d+")) %>%
+    group_by(pre, post, celltype.pre, celltype.post, replicate) %>%
+    summarise(present = TRUE, .groups = 'drop') %>%
+    mutate(
+      celltype.pre = factor(celltype.pre, levels = pre_order),
+      celltype.post = factor(celltype.post, levels = post_order)
+    ) %>%
+    arrange(celltype.pre, pre, celltype.post, post)
+  
+  pre_barcodes <- plot_data %>%
+    dplyr::select(pre, celltype.pre) %>%
+    distinct() %>%
+    arrange(celltype.pre, pre) %>%
+    pull(pre)
+  
+  post_barcodes <- plot_data %>%
+    dplyr::select(post, celltype.post) %>%
+    distinct() %>%
+    arrange(celltype.post, post) %>%
+    pull(post)
+  
+  plot_data <- plot_data %>%
+    mutate(
+      pre = factor(pre, levels = pre_barcodes),
+      post = factor(post, levels = post_barcodes),
+      pre_num = as.numeric(pre),
+      post_num = as.numeric(post)
+    )
+  
+  pre_anno <- plot_data %>%
+    dplyr::select(pre, pre_num, celltype.pre) %>%
+    distinct()
+  
+  post_anno <- plot_data %>%
+    dplyr::select(post, post_num, celltype.post) %>%
+    distinct()
+  
+  n_pre <- length(pre_barcodes)
+  n_post <- length(post_barcodes)
+  
+  main_plot <- ggplot(plot_data) +
+    geom_tile(aes(x = post_num, y = pre_num, fill = replicate), 
+              color = "white", size = 0.1) +
+    scale_fill_manual(
+      "Replicate",
+      values = replicate_colors
+    ) +
+    new_scale_fill() +
+    geom_tile(data = pre_anno,
+              aes(x = 0, y = pre_num, fill = celltype.pre),
+              width = 1) +
+    scale_fill_manual("Pre-synaptic\ncell type", 
+                     values = custom_colors.pn,
+                     breaks = legend_pre_order) +
+    new_scale_fill() +
+    geom_tile(data = post_anno,
+              aes(x = post_num, y = n_pre + 1, fill = celltype.post),
+              height = 1) +
+    scale_fill_manual("Post-synaptic\ncell type", 
+                     values = custom_colors.cn,
+                     breaks = post_order) +
+    scale_x_continuous(limits = c(-0.5, n_post + 0.5)) +
+    scale_y_continuous(limits = c(0.5, n_pre + 1.5)) +
+    theme_minimal() +
+    theme(
+      axis.text = element_blank(),
+      axis.title = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "right",
+      legend.box = "vertical",
+      legend.margin = margin(5, 5, 5, 5),
+      legend.box.margin = margin(10, 10, 10, 10),
+      legend.text = element_text(size = 8),
+      legend.title = element_text(size = 9),
+      legend.key.height = unit(0.5, "cm"),
+      legend.key.width = unit(0.3, "cm"),
+      plot.title = element_text(hjust = 0.5, size = 12),
+      plot.margin = unit(c(1, 1, 1, 1), "cm"),
+      legend.box.spacing = unit(0.2, "cm"),
+      legend.spacing = unit(0.2, "cm")
+    ) +
+    labs(title = "Matched synaptosome connections by replicate")
+  
+  return(list(
+    plot = main_plot,
+    summary = list(
+      pre_nuclei = length(unique(data.raw$pre)),
+      post_nuclei = length(unique(data.raw$post)),
+      synapses = length(unique(data.raw$syn)),
+      replicates = table(plot_data$replicate)
+    )
+  ))
+}
+# Define common color schemes and orders
+pre_order <- rev(c(
+    "Fat2 Glut", "Hoxb5 Glut", "Gata3 Gly-Gaba", "Otp Gly-Gaba","Otp Pax3 Gaba","Tph2 Glut-Sero"
+))
+
+legend_pre_order <- c(
+    "Fat2 Glut", "Hoxb5 Glut", "Gata3 Gly-Gaba",  "Otp Gly-Gaba","Otp Pax3 Gaba","Tph2 Glut-Sero"
+)
+
+post_order <- c(
+    "Granule", "UBC",  # Excitatory
+    "Purkinje", "MLI1", "MLI2", "Golgi", "PLI"  # Inhibitory
+)
+
+custom_colors.cn <- c(
+    "Granule" = "#00BFA5",        # Bright teal-green (like pons Glut)
+    "UBC" = "#64DD17",            # Dark forest green
+    "Purkinje" = "#D32F2F",     # Deep red
+    "MLI1" = "#FF6F00",         # Deep orange
+    "MLI2" = "#9C27B0",         # Purple
+    "Golgi" = "#795548",        # Brown
+    "PLI" = "#C51162"
+)
+
+
+custom_colors.pn <- c(
+    "Fat2 Glut" = "#00BFA5",
+    "Hoxb5 Glut" = "#64DD17",
+    "Gata3 Gly-Gaba" = "#FF6D00",
+    "Otp Pax3 Gaba" = "brown",
+    "Onecut1 Gaba" = "maroon",
+    "Tph2 Glut-Sero" = "#FF1744"
+)
+
+replicate_colors <- c(
+    "1" = "#FF0000",    # Pure Red
+    "25" = "#0000FF",   # Pure Blue
+    "31" = "#00FF00",   # Pure Green
+    "34" = "#FFD700",   # Gold
+    "35" = "#FF00FF",   # Magenta
+    "36" = "#00FFFF"    # Cyan
+)
+```
+
+#plots
+```{r}
+# iterative plot generation
+generate_plots <- function(hamming_distances = 0:3, 
+                                    output_folder = "all_plots") {
+    # Create main output directory
+    dir.create(output_folder, showWarnings = FALSE)
+    original_dir <- getwd()
+    
+    for(hamm_dist in hamming_distances) {
+        cat(sprintf("\nProcessing hamming distance %d...\n", hamm_dist))
+        
+        # Create directory for this hamming distance
+        dir.create(file.path(output_folder, sprintf("hamm%d", hamm_dist)), 
+                  showWarnings = FALSE, recursive = TRUE)
+        
+        # Load the existing matched data
+        load(sprintf("cseq.all.matched.BC.hamm%d.RData", hamm_dist))
+        
+        # Add cell types for both PRE and POST
+        cseq.all.pre.filtered$celltype.pre <- celltype.pons.new[match(cseq.all.pre.filtered$V2.1, 
+                                                                   rownames(celltype.pons.new)), "cluster_type"]
+        cseq.all.post.filtered$celltype.post <- celltype.cere.new[match(cseq.all.post.filtered$V2.1, 
+                                                                 rownames(celltype.cere.new)), "cluster_type"]
+        
+        # Set paths for input and output
+        output_path <- file.path(output_folder, sprintf("hamm%d", hamm_dist))
+        setwd(output_path)
+        
+        ##### generate the csv used for connectome plots
+        # Prepare pre data
+        pre.match <- cseq.all.pre.filtered %>% 
+            rename(
+                synp_CB = V2,
+                pre_N30 = match,
+                preNuc_CB = V2.1,
+                preNuc_count = totalcount,
+                presynp_count = synpcount
+            )
+        
+        # Prepare post data
+        post.match <- cseq.all.post.filtered %>% 
+            rename(
+                synp_CB = V2,
+                post_N30 = match,
+                postNuc_CB = V2.1,
+                postNuc_count = totalcount,
+                postsynp_count = synpcount
+            )
+        
+        # Merge and generate counts
+        connectome.match <- merge(pre.match, post.match, by = "synp_CB")
+        
+        connectome.match.count <- connectome.match %>% 
+            group_by(synp_CB, preNuc_CB, postNuc_CB, celltype.pre, celltype.post) %>% 
+            summarize(count = n(), .groups = 'drop')
+        
+        # Ensure unknown values are handled consistently
+        connectome.match.count$celltype.pre[is.na(connectome.match.count$celltype.pre)] <- "unknown"
+        connectome.match.count$celltype.post[is.na(connectome.match.count$celltype.post)] <- "unknown"
+        
+        write.csv(connectome.match.count, "connectome.match.count.csv", row.names = FALSE)
+        
+
+        
+        # Generate plots using the modified function
+        result1 <- analyze_connectome_cluster()
+        ggsave("connectome_v1_clustered.pdf", result1$plot, height = 8, width = 16)
+        
+        results2 <- analyze_connectome(cseq.all.pre.filtered, cseq.all.post.filtered)
+        ggsave("connectome_v2_ordered.pdf", results2$plot, height = 8, width = 16)
+        
+        results3 <- analyze_connectome_by_replicate_solid(cseq.all.pre.filtered, cseq.all.post.filtered)
+        ggsave("connectome_v3_samples.pdf", results3$plot, height = 8, width = 16)
+        
+        # Generate cell type distribution plots
+        unique_counts_stringent_pre <- cseq.all.pre.filtered %>%
+            mutate(celltype.pre = as.character(celltype.pre)) %>%
+            mutate(celltype.pre = replace_na(celltype.pre, "unknown")) %>%
+            group_by(celltype.pre) %>%
+            summarise(nuc_number = n_distinct(V2.1)) %>%
+            arrange(desc(nuc_number)) %>%
+            mutate(celltype.pre = factor(celltype.pre, levels = celltype.pre))
+        
+        p1 <- ggplot(unique_counts_stringent_pre, 
+                    aes(x = celltype.pre, y = nuc_number, fill = celltype.pre)) +
+            geom_bar(stat = 'identity') + 
+            geom_text(aes(label = nuc_number), vjust = -0.5) +
+            scale_fill_manual(values = custom_colors.pn) +
+            theme_minimal() +
+            theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+            labs(x = "Cell Type", y = "Number of Nuclei")
+        ggsave(sprintf("pre.matched.celltype.hamm%d.pdf", hamm_dist), p1, 
+               width = 8, height = 6)
+        
+        read_counts_pre <- cseq.all.pre.filtered %>%
+            mutate(celltype.pre = as.character(celltype.pre)) %>%
+            mutate(celltype.pre = replace_na(celltype.pre, "unknown")) %>%
+            group_by(celltype.pre) %>%
+            summarise(count = n()) %>%
+            arrange(desc(count))
+        
+        p2 <- ggplot(cseq.all.pre.filtered %>% 
+                        mutate(celltype.pre = as.character(celltype.pre)) %>%
+                        mutate(celltype.pre = replace_na(celltype.pre, "unknown")) %>%
+                        mutate(celltype.pre = factor(celltype.pre, levels = read_counts_pre$celltype.pre)), 
+                    aes(x = celltype.pre, fill = celltype.pre)) +
+            geom_bar() + 
+            geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5) +
+            scale_fill_manual(values = custom_colors.pn) +
+            theme_minimal() +
+            theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+            labs(x = "Cell Type", y = "Number of Reads")
+        ggsave(sprintf("pre.matched.celltype.reads.hamm%d.pdf", hamm_dist), p2, 
+               width = 8, height = 6)
+        
+        
+        unique_counts_stringent_post <- cseq.all.post.filtered %>%
+            mutate(celltype.post = as.character(celltype.post)) %>%
+            mutate(celltype.post = replace_na(celltype.post, "unknown")) %>%
+            group_by(celltype.post) %>%
+            summarise(nuc_number = n_distinct(V2.1)) %>%
+            arrange(desc(nuc_number)) %>%
+            mutate(celltype.post = factor(celltype.post, levels = celltype.post))
+        
+        p3 <- ggplot(unique_counts_stringent_post, 
+                    aes(x = celltype.post, y = nuc_number, fill = celltype.post)) +
+            geom_bar(stat = 'identity') + 
+            geom_text(aes(label = nuc_number), vjust = -0.5) +
+            scale_fill_manual(values = custom_colors.cn) +
+            theme_minimal() +
+            theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+            labs(x = "Cell Type", y = "Number of Nuclei")
+        ggsave(sprintf("post.matched.celltype.hamm%d.pdf", hamm_dist), p3, 
+               width = 8, height = 6)
+        
+        read_counts_post <- cseq.all.post.filtered %>%
+            mutate(celltype.post = as.character(celltype.post)) %>%
+            mutate(celltype.post = replace_na(celltype.post, "unknown")) %>%
+            group_by(celltype.post) %>%
+            summarise(count = n()) %>%
+            arrange(desc(count))
+        
+        p4 <- ggplot(cseq.all.post.filtered %>% 
+                        mutate(celltype.post = as.character(celltype.post)) %>%
+                        mutate(celltype.post = replace_na(celltype.post, "unknown")) %>%
+                        mutate(celltype.post = factor(celltype.post, levels = read_counts_post$celltype.post)), 
+                    aes(x = celltype.post, fill = celltype.post)) +
+            geom_bar() + 
+            geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5) +
+            scale_fill_manual(values = custom_colors.cn) +
+            theme_minimal() +
+            theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+            labs(x = "Cell Type", y = "Number of Reads")
+        ggsave(sprintf("post.matched.celltype.reads.hamm%d.pdf", hamm_dist), p4, 
+               width = 8, height = 6)
+        
+        
+        # Print summary
+        cat(sprintf("\nSummary for hamming distance %d:\n", hamm_dist))
+        cat(sprintf("PRE nuclei: %d\n", length(unique(connectome.match.count$preNuc_CB))))
+        cat(sprintf("POST nuclei: %d\n", length(unique(connectome.match.count$postNuc_CB))))
+        cat(sprintf("Supporting synp: %d\n", length(unique(connectome.match.count$synp_CB))))
+        
+        # Return to original directory after processing each hamming distance
+        setwd(original_dir)
+    }
+}
+
+# Call the function to regenerate all plots
+generate_plots()
+
+
+
+```
+
+
+
+#barplot and lineplot for trend analysis
+```{r}
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+
+# Load the master summary data
+load("all_samples_summary.rdata")
+
+# Step 1: Combine samples for each distance
+combined_stats <- master_summary %>%
+    group_by(distance) %>%
+    summarize(
+        pre_total = sum(pre_total),
+        pre_matched = sum(pre_matched), # single matches
+        pre_review = sum(pre_review),   # multiple matches
+        pre_remaining = sum(pre_remaining),
+        post_total = sum(post_total),
+        post_matched = sum(post_matched),
+        post_review = sum(post_review),
+        post_remaining = sum(post_remaining)
+    ) %>%
+    # Calculate percentage
+    mutate(
+        pre_percent = (pre_matched/pre_total) * 100,
+        post_percent = (post_matched/post_total) * 100
+    )
+
+# Function to create barplot
+create_barcode_plot <- function(stats_data, hamm_dist, show_legend = FALSE) {
+    # For hamming distance 0, don't show multi matches if they're 0
+    if(hamm_dist == 0) {
+        plot_data <- data.frame(
+            barcode = factor(rep(c("PreRNA", "PostRNA"), each = 2),
+                           levels = c("PreRNA", "PostRNA")),
+            category = factor(rep(c("Single Match", "Unmatched"), times = 2),
+                            levels = c("Unmatched", "Single Match")),
+            value = c(
+                stats_data$pre_matched,
+                stats_data$pre_remaining,
+                stats_data$post_matched,
+                stats_data$post_remaining
+            )
+        )
+    } else {
+        plot_data <- data.frame(
+            barcode = factor(rep(c("PreRNA", "PostRNA"), each = 3),
+                           levels = c("PreRNA", "PostRNA")),
+            category = factor(rep(c("Single Match", "Multiple Matches", "Unmatched"), times = 2),
+                            levels = c("Unmatched", "Multiple Matches", "Single Match")),
+            value = c(
+                stats_data$pre_matched,
+                stats_data$pre_review,
+                stats_data$pre_remaining,
+                stats_data$post_matched,
+                stats_data$post_review,
+                stats_data$post_remaining
+            )
+        )
+    }
+    
+    p <- ggplot(plot_data, aes(x = barcode, y = value)) +
+        geom_col(aes(fill = category), width = 0.5) +  # Reduced width from default 0.9
+        geom_text(position = position_stack(vjust = 0.5),
+                 aes(label = format(value, big.mark = ",")),
+                 size = 8) +
+        scale_fill_manual(values = c(
+            "Single Match" = "#F781BF",
+            "Multiple Matches" = "#FFB6C1",
+            "Unmatched" = "lightblue"
+        )) +
+        theme_classic() +
+        theme(
+            axis.text.x = element_text(angle = 45, hjust = 1, size = 24),
+            axis.text.y = element_text(size = 24),
+            axis.title = element_text(size = 24),
+            legend.title = element_text(size = 24),
+            legend.text = element_text(size = 24),
+            legend.position = if(show_legend) "right" else "none",
+            plot.title = element_text(size = 24),
+            plot.margin = unit(c(1, 1, 1, 1), "cm")  # Consistent margins
+        ) +
+        labs(
+            x = "Barcode",
+            y = "Number of barcodes",
+            fill = "Status",
+            title = sprintf("Hamming Distance %d", hamm_dist)
+        )
+    
+    return(p)
+}
+
+# Create barplots for each distance
+barplot_list <- list()
+for(hamm_dist in 0:3) {
+    stats_data <- combined_stats %>% filter(distance == hamm_dist)
+    barplot_list[[hamm_dist + 1]] <- create_barcode_plot(stats_data, hamm_dist)
+}
+
+# Create and save barplot grid
+barplot_grid <- grid.arrange(
+    grobs = barplot_list,
+    ncol = 2,
+    nrow = 2
+)
+ggsave("panel_barcode_counts_grid.pdf", barplot_grid, width = 16, height = 16)
+
+# Create lineplot
+plot_data <- data.frame(
+    distance = rep(combined_stats$distance, 2),
+    RNA_type = rep(c("PreRNA", "PostRNA"), each = nrow(combined_stats)),
+    percentage = c(combined_stats$pre_percent, combined_stats$post_percent)
+)
+
+trend_plot <- ggplot(plot_data, aes(x = distance, y = percentage, color = RNA_type)) +
+    geom_line(size = 1) +
+    geom_point(size = 3) +
+    geom_text(aes(label = sprintf("%.1f%%", percentage)),
+              vjust = -0.8, size = 4) +
+    geom_vline(xintercept = 2, linetype = "dashed", color = "gray50", alpha = 0.5) +
+    scale_color_manual(values = c("PreRNA" = "#F781BF", "PostRNA" = "skyblue")) +
+    scale_x_continuous(breaks = 0:3) +
+    theme_classic() +
+    theme(
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 14),
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.position = "right"
+    ) +
+    labs(
+        x = "Hamming Distance",
+        y = "Matched Percentage",
+        color = "RNA Type",
+        title = "Single Matched Percentage vs Hamming Distance",
+        subtitle = "Dashed line indicates chosen distance hamm=2"
+    )
+
+ggsave("matched_percentage_trend.pdf", trend_plot, width = 8, height = 6)
+```
+
+#Sankey plot, do this in each hamm distance folder
+```{r}
+# Load required libraries
+library(networkD3)
+library(dplyr)
+library(readr)
+
+# Read the CSV data
+data <- read.csv("./all_plots/hamm2/connectome.match.count.csv")
+
+
+# Define node colors without UBC
+node_colors <- c(
+    "Fat2 Glut" = "#00BFA5",
+    "Hoxb5 Glut" = "#64DD17",
+    "Gata3 Gly-Gaba" = "#FF6D00",
+    "Tph2 Glut-Sero" = "#FF1744",
+    "Onecut1 Gaba" = "maroon",
+    "Otp Pax3 Gaba" = "brown",
+    "Golgi" = "#795548",
+    "Purkinje" = "#D32F2F",
+    "Granule" = "#00BFA5",
+    "MLI1" = "#FF6F00",
+    "PLI" = "#C51162",
+    "MLI2" = "#9C27B0"
+)
+
+# Calculate counts
+source_counts <- data %>%
+    group_by(celltype.pre) %>%
+    summarise(count = n_distinct(synp_CB))
+
+target_counts <- data %>%
+    group_by(celltype.post) %>%
+    summarise(count = n_distinct(synp_CB))
+
+# Create nodes dataframe with manual ordering
+nodes <- data.frame(
+    name = c(
+        # Source nodes with Otp at the end
+        "Fat2 Glut", "Hoxb5 Glut", "Gata3 Gly-Gaba", 
+        "Tph2 Glut-Sero", "Onecut1 Gaba", "Otp Pax3 Gaba",
+        # Target nodes (without UBC)
+        "Golgi", "Purkinje", "Granule", "MLI1", "PLI", "MLI2"
+    ),
+    stringsAsFactors = FALSE
+)
+
+# Add counts
+nodes$count <- sapply(nodes$name, function(x) {
+    if(x %in% source_counts$celltype.pre) {
+        return(source_counts$count[source_counts$celltype.pre == x])
+    } else {
+        return(target_counts$count[target_counts$celltype.post == x])
+    }
+})
+
+nodes$label <- paste0(nodes$name, " (", nodes$count, ")")
+
+# Create links
+links <- data %>%
+    group_by(celltype.pre, celltype.post) %>%
+    summarise(value = n_distinct(synp_CB)) %>%
+    ungroup()
+
+# Convert to 0-based indices
+links$source <- match(links$celltype.pre, nodes$name) - 1
+links$target <- match(links$celltype.post, nodes$name) - 1
+
+# Create the Sankey diagram
+p <- sankeyNetwork(
+    Links = links, 
+    Nodes = nodes,
+    Source = "source",
+    Target = "target",
+    Value = "value",
+    NodeID = "label",
+    colourScale = sprintf(
+        'd3.scaleOrdinal()
+        .domain([%s])
+        .range([%s])',
+        paste(sprintf('"%s"', nodes$name), collapse = ','),
+        paste(sprintf('"%s"', node_colors[nodes$name]), collapse = ',')
+    ),
+    nodeWidth = 40,
+    nodePadding = 25,
+    height = 900,
+    width = 1000,
+    sinksRight = TRUE,
+    fontSize = 20,
+    fontFamily = "Arial",
+    iterations = 100
+)
+
+# Display the plot
+p
+# Save the plot
+#htmlwidgets::saveWidget(p, 
+#                       file = "sankey_diagram.html", 
+#                       selfcontained = TRUE)
+```
+
+```{r}
+#################### single matched nuc plotting on UMAP, hamm=2 #####################
+pn_neuron_clusters <- c("Fat2 Glut", "Hoxb5 Glut", "Gata3 Gly-Gaba", "Onecut1 Gaba","Otp Pax3 Gaba","Tph2 Glut-Sero")  
+cn_neuron_clusters <- c("Granule", "UBC", "Purkinje", "MLI1", "MLI2", "Golgi", "PLI")
+scdata.PN.5 <- subset(scdata.PN.4, cells=WhichCells(scdata.PN.4, idents = pn_neuron_clusters))
+scdata.CB.5 <- subset(scdata.CB.4, cells=WhichCells(scdata.CB.4, idents = cn_neuron_clusters))
+
+load(cseq.all.matched.BC.hamm2.RData)
+
+# plot matched Nuc on UMAP plot (single matched)
+DimPlot(object = scdata.CB.5, cells.highlight = cseq.all.post.filtered$V2.1, cols.highlight = "#ff4d00", cols = "gray", order = TRUE, raster=FALSE)+coord_fixed()
+ggsave("CN-matched-umap.pdf",  width=6, height=6, device="pdf", useDingbats=FALSE)
+
+DimPlot(object = scdata.PN.5, cells.highlight = cseq.all.pre.filtered$V2.1, cols.highlight = "#00A9FF", cols = "gray", order = TRUE, raster=FALSE)+coord_fixed()
+ggsave("PN-matched-umap.pdf",  width=6, height=6, device="pdf", useDingbats=FALSE)
+```
+
