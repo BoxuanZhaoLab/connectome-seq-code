@@ -1,7 +1,7 @@
 ---
-title: "cseq_Cluster"
+title: "new_cluster"
 output: html_document
-date: "2025-03-05"
+date: "2025-05-05"
 ---
 
 ```{r setup, include=FALSE}
@@ -181,8 +181,8 @@ custom_colors.pn.all <- c(
 ```
 
 ```{r}
-scdata.PN.mapped <- readRDS("scdata.PN.mapped.rds")
-scdata.CB.mapped <- readRDS("scdata.CB.mapped.rds")
+scdata.PN.mapped <- readRDS("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/scdata.PN.mapped.rds")
+scdata.CB.mapped <- readRDS("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/scdata.CB.mapped.rds")
 ```
 
 #process PN
@@ -243,6 +243,15 @@ ggsave("resolution_comparison_nclusters.pdf")
 ```
 
 ```{r}
+scdata.PN <- scdata.PN.mapped %>% 
+  RunUMAP(reduction = "harmony", dims = 1:30) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 1.5)
+analyze_seurat_clusters(scdata.PN, features.plot.pn, "test-PN")
+```
+
+
+```{r}
 #remove low-quality clusters based on features counts lower than 1000 and no markers
 scdata.PN <- scdata.PN.mapped %>% 
   RunUMAP(reduction = "harmony", dims = 1:30) %>%
@@ -254,7 +263,7 @@ analyze_seurat_clusters(scdata.PN, features.plot.pn, "PN")
 scdata.PN.2 <- subset(scdata.PN,
                       RNA_snn_res.1 != "0"
                       & RNA_snn_res.1 != "2"
-                      & RNA_snn_res.1 != "19"
+                      # & RNA_snn_res.1 != "19"
                       & RNA_snn_res.1 != "37"
                       & RNA_snn_res.1 != "38")
 
@@ -288,7 +297,7 @@ DimPlot(scdata.PN.2,
         label.box = FALSE,           # Remove boxes around labels
         pt.size = 0.5) +             # Adjust point size as needed
     NoLegend()
-ggsave("/data/R/CSeq_reanalyze/connectome_seq_figures_Joe/PN.cluster.pdf") 
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/PN.cluster.pdf") 
 ```
 
 ```{r}
@@ -316,7 +325,7 @@ DimPlot(scdata.PN.3,
         label.box = FALSE,           # Remove boxes around labels
         pt.size = 0.5) +             # Adjust point size as needed
     NoLegend()
-    ggsave("PN.AI.pdf")  
+    ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/PN.AI.pdf")  
     
 
 ```
@@ -343,7 +352,7 @@ p<-pheatmap(log1p(cluster_annotation_matrix),
          main = "Cluster-Annotation Log-Transformed Counts",
          angle_col = 45,
          clustering_method = "ward.D2")
-   ggsave("PN-AI-celltype.pdf", p, width = 15, height = 6)
+   ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/PN-AI-celltype.pdf", p, width = 15, height = 6)
    
  DotPlot(scdata.PN.2, 
                   features = features.plot.pn,
@@ -351,13 +360,17 @@ p<-pheatmap(log1p(cluster_annotation_matrix),
                   dot.scale = 8) +
         theme(axis.text.x = element_text(angle = 45, hjust = 1))
     
-    ggsave("pn_markers_dotplot.pdf", 
+    ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/pn_markers_dotplot.pdf", 
            width = 15, 
            height = 6)    
 ```
+
+
 #reassign outlying cells to the correct cluster
 ```{r}
 scdata.PN.4 <- scdata.PN.2
+cluster27_outlier <- subset(scdata.PN.4, RNA_snn_res.1 == "27") %>% subset(mapmycell_class %in% c("23 P Glut", "24 MY Glut")) %>% colnames()
+
 # Get UMAP coordinates
 umap_coords <- Embeddings(scdata.PN.4, "umap")
 
@@ -370,7 +383,7 @@ calc_distance <- function(point, center) {
 }
 
 # Identify outliers and reassign them
-flag = 0
+
 new_identities <- Idents(scdata.PN.4)
 for(cluster in unique(Idents(scdata.PN.4))) {
     # Get cells in current cluster
@@ -385,8 +398,7 @@ for(cluster in unique(Idents(scdata.PN.4))) {
     
     # Identify outliers using MAD
     mad_score <- abs(cluster_distances - median(cluster_distances)) / mad(cluster_distances)
-    outlier_cells <- which(cluster_cells)[mad_score > 5]
-    flag <- flag + length(outlier_cells)
+    outlier_cells <- which(cluster_cells)[mad_score > 4]
     # For each outlier, find the nearest cluster
     if(length(outlier_cells) > 0) {
         for(cell in outlier_cells) {
@@ -402,57 +414,64 @@ for(cluster in unique(Idents(scdata.PN.4))) {
 }
 
 
-test <- sum(new_identities != Idents(scdata.PN.2))
-print(test)
-
-
 # Update cell identities
 Idents(scdata.PN.4) <- new_identities
 
+scdata.PN.4 <- SetIdent(
+  object = scdata.PN.4,
+  cells  = cluster27_outlier,
+  value  = "10"
+)
+
 # Plot to check results
 DimPlot(scdata.PN.4, reduction = "umap", label = TRUE)
-    ggsave("PN.umap.pdf")  
+    ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/PN.umap.pdf")  
 ```
 
 
 ```{r}
-pn.cluster <- c( "Hoxb5 Glut", #0
-                         "Fat2 Glut", #1
-                         "Hoxb5 Glut", #2
-                         "Fat2 Glut", #3
-                         "Fat2 Glut", #4
-                         "ODC", #5
-                         "Fat2 Glut", #6
-                         "Hoxb5 Glut", #7
-                         "ODC", #8
-                         "Astro", #9
-                         "Fat2 Glut", #10
-                         "Hoxb5 Glut", #11
-                         "Gata3 Gly-Gaba",  #12
-                         "Hoxb5 Glut",  #13
-                         "Otp Pax3 Gaba", #14
-                         "Gata3 Gly-Gaba", #15
-                         "OPC", #16
-                         "Endo", #17
-                         "Gata3 Gly-Gaba", #18
-                         "Astro", #19
-                         "ODC", #20
-                         "Endo", #21
-                         "Tph2 Glut-Sero",  #22
-                         "Fat2 Glut",  #23
-                         "Gata3 Gly-Gaba", #24
-                         "Onecut1 Gaba", #25
-                         "Hoxb5 Glut", #26
-                         "Astro", #27
-                         "Micro", #28
-                         "Macro", #29
-                         "Astro", #30
-                         "Astro", #31
-                         "Hoxb5 Glut", #32
-                         "Hoxb5 Glut" #33
+pn.cluster <- c( "Hoxb5 Glut", #10
+                 "Hoxb5 Glut", #0
+                 "Fat2 Glut", #1
+                 "Fat2 Glut", #2
+                 "Fat2 Glut", #3
+                 "Hoxb5 Glut", #4
+                 "ODC", #5
+                 "Fat2 Glut", #6
+                 "Hoxb5 Glut", #7
+                 "Astro", #8
+                 "ODC", #9
+                 "Fat2 Glut", #11
+                 "Gata3 Gly-Gaba",  #12
+                 "Hoxb5 Glut",  #13
+                 "Otp Pax3 Gaba", #14
+                 "Gata3 Gly-Gaba", #15
+                 "OPC", #16
+                 "ODC", #17
+                 "Endo", #18
+                 "Tph2 Glut-Sero", #19
+                 "Gata3 Gly-Gaba", #20
+                 "Endo", #21
+                 "Fat2 Glut",  #22
+                 "Tph2 Glut-Sero",  #23
+                 "Gata3 Gly-Gaba", #24
+                 "Onecut1 Gaba", #25
+                 "Hoxb5 Glut", #26
+                 "Astro", #27
+                 "Micro", #28
+                 "Macro", #29
+                 "Astro", #30
+                 "Astro", #31
+                 "Hoxb5 Glut", #32
+                 "Hoxb5 Glut", #33
+		             "Hoxb5 Glut", #34
+		             "Hoxb5 Glut"#35
                          )
+
+
 names(pn.cluster) <- levels(scdata.PN.4)
 scdata.PN.4 <- RenameIdents(scdata.PN.4, pn.cluster)
+
 DimPlot(scdata.PN.4, 
         reduction = "umap", 
         label = FALSE,
@@ -478,7 +497,7 @@ DimPlot(scdata.PN.4,
         aspect.ratio = 1
     )
 
-ggsave("PN-AI-umap.pdf", 
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/PN-AI-umap.pdf", 
        width = 10, height = 10,
        dpi = 300,
        device = cairo_pdf)
@@ -507,7 +526,7 @@ DotPlot(object = scdata.PN.4,
           legend.title = element_text(size = 16), # Larger font for legend title
           plot.margin = margin(b = 20, r = 20))
 
-ggsave("pons-mRNA-marker.pdf", width = 12, height = 8, device = "pdf", useDingbats = FALSE)
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/pons-mRNA-marker.pdf", width = 12, height = 8, device = "pdf", useDingbats = FALSE)
 ```
 
 
@@ -612,7 +631,7 @@ DimPlot(scdata.CB.2,
         label.box = FALSE,           # Remove boxes around labels
         pt.size = 0.5) +             # Adjust point size as needed
     NoLegend()
-ggsave("CN.clusters.pdf") 
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/CN.clusters.pdf") 
 ```
 
 ```{r}
@@ -640,7 +659,7 @@ DimPlot(scdata.CB.3,
         label.box = FALSE,           # Remove boxes around labels
         pt.size = 0.5) +             # Adjust point size as needed
     NoLegend()
-    ggsave("CN.AI.pdf")    
+    ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/CN.AI.pdf")    
 ```
 
 ```{r}
@@ -665,7 +684,7 @@ p1<-pheatmap(log1p(cluster_annotation_matrix),
          main = "Cluster-Annotation Log-Transformed Counts",
          angle_col = 45,
          clustering_method = "ward.D2")
-   ggsave("CN-AI-celltype.pdf", p1, width = 12, height = 6)
+   ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/CN-AI-celltype.pdf", p1, width = 12, height = 6)
  
    DotPlot(scdata.CB.2, 
                   features = features.plot.cn,
@@ -673,7 +692,7 @@ p1<-pheatmap(log1p(cluster_annotation_matrix),
                   dot.scale = 8) +
         theme(axis.text.x = element_text(angle = 45, hjust = 1))
     
-    ggsave("cn_markers_dotplot.pdf", 
+    ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/cn_markers_dotplot.pdf", 
            width = 15, 
            height = 6)    
 ```
@@ -727,7 +746,7 @@ Idents(scdata.CB.4) <- new_identities
 
 # Plot to check results
 DimPlot(scdata.CB.4, reduction = "umap", label = TRUE)
-    ggsave("CN.umap.pdf")    
+    ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/CN.umap.pdf")    
 
 ```
 
@@ -783,7 +802,7 @@ DimPlot(scdata.CB.4,
         aspect.ratio = 1
     )
 
-ggsave("CN-AI-umap.pdf", 
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/CN-AI-umap.pdf", 
        width = 10, height = 10,
        dpi = 300,
        device = cairo_pdf)
@@ -814,7 +833,7 @@ DotPlot(object = scdata.CB.4,
           legend.title = element_text(size = 16), # Larger font for legend title
           plot.margin = margin(b = 20, r = 20))
 
-ggsave("cere-mRNA-marker.pdf", width = 12, height = 8, device = "pdf", useDingbats = FALSE)
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/cere-mRNA-marker.pdf", width = 12, height = 8, device = "pdf", useDingbats = FALSE)
 ```
 #save the cell type info
 ```{r}
@@ -830,7 +849,7 @@ celltype.cere.new <- data.frame(
 )
 
 # Save annotations
-save(celltype.pons.new, celltype.cere.new, file = "celltype_annotations.rdata")
+save(celltype.pons.new, celltype.cere.new, file = "/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/celltype_annotations.rdata")
 ```
 
 
@@ -868,7 +887,7 @@ library(patchwork)
 combined_plot <- p2 + p1 + plot_layout(ncol = 2)
 
 # Save with square dimensions
-ggsave("pons-Synbar-levels.pdf", 
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/pons-Synbar-levels.pdf", 
        combined_plot,
        width = 10,     # Total width
        height = 5,     # Height to maintain square aspect for each plot
@@ -905,7 +924,7 @@ library(patchwork)
 combined_plot <- p2 + p1 + plot_layout(ncol = 2)
 
 # Save with square dimensions
-ggsave("cere-Synbar-levels.pdf", 
+ggsave("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/cere-Synbar-levels.pdf", 
       combined_plot,
       width = 10,     # Total width
       height = 5,     # Height to maintain square aspect for each plot
@@ -927,6 +946,6 @@ pn_barcodes <- colnames(scdata.PN.4)[Idents(scdata.PN.4) %in% pn_neuron_clusters
 cn_barcodes <- colnames(scdata.CB.4)[Idents(scdata.CB.4) %in% cn_neuron_clusters]
 
 # Save barcodes
-writeLines(pn_barcodes, "pn_neuron_barcodes.txt")
-writeLines(cn_barcodes, "cn_neuron_barcodes.txt")
+writeLines(pn_barcodes, "/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/pn_neuron_barcodes.txt")
+writeLines(cn_barcodes, "/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/cn_neuron_barcodes.txt")
 ```
