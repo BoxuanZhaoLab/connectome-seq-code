@@ -1,7 +1,7 @@
 ---
-title: "cseq_Match"
+title: "new_match_Joe_041825"
 output: html_document
-date: "2025-03-05"
+date: "2025-04-18"
 ---
 (add this: )
 #load raw barcode reads data
@@ -46,54 +46,28 @@ every_nth = function(n) {
 #main function for matching at different hamm distance
 ```{r,echo = FALSE}
 #' Calculate Hamming distance between sequences efficiently
-
 #' Hamming distance is the number of positions at which two sequences differ
 
 hamming_distance_vec <- function(query_prefix, ref_prefixes) {
-
     # Split the query sequence into individual characters
-
     query_chars <- strsplit(query_prefix, '')[[1]]
-
-    
-
     # Split all reference sequences into individual characters
-
     ref_chars_list <- strsplit(ref_prefixes, '')
-
-    
-
     # Compare query against each reference sequence and count differences
-
     # vapply is a faster version of sapply that requires specifying the output type
-
     vapply(ref_chars_list, function(ref_chars) 
-
         sum(query_chars != ref_chars), numeric(1))
-
 }
 
 #' Choose the best match when multiple matches are found
-
 #' Selection is based on totalcount (frequency) and celltype information
 
 select_best_match <- function(candidates) {
-
-    
   # If only one candidate, return its index
-
     if (nrow(candidates) == 1) return(1)
-
-    
-
     # Find the highest totalcount among candidates
-
     max_count <- max(candidates$totalcount, na.rm = TRUE)
-
-    
-
     # Select all candidates with the highest count
-
     best_counts <- candidates[candidates$totalcount == max_count,]
 
     
@@ -1628,7 +1602,7 @@ p <- sankeyNetwork(
     height = 900,
     width = 1000,
     sinksRight = TRUE,
-    fontSize = 20,
+    fontSize = 25,
     fontFamily = "Arial",
     iterations = 100
 )
@@ -1636,9 +1610,9 @@ p <- sankeyNetwork(
 # Display the plot
 p
 # Save the plot
-#htmlwidgets::saveWidget(p, 
-#                       file = "sankey_diagram.html", 
-#                       selfcontained = TRUE)
+htmlwidgets::saveWidget(p, 
+                       file = "sankey_diagram.html", 
+                       selfcontained = TRUE)
 ```
 
 ```{r}
@@ -1651,7 +1625,7 @@ scdata.CB.5 <- subset(scdata.CB.4, cells=WhichCells(scdata.CB.4, idents = cn_neu
 load("cseq.all.matched.BC.hamm2.RData")
 
 # plot matched Nuc on UMAP plot (single matched)
-DimPlot(object = scdata.CB.5, cells.highlight = cseq.all.post.filtered$V2.1, cols.highlight = "#ff4d00", cols = "gray", order = TRUE, raster=FALSE)+coord_fixed()
+DimPlot(object = scdata.CB.5, cells.highlight = cseq.all.post.filtered$V2.1, cols.highlight = "#00A9FF", cols = "gray", order = TRUE, raster=FALSE)+coord_fixed()
 ggsave("CN-matched-umap.pdf",  width=6, height=6, device="pdf", useDingbats=FALSE)
 
 DimPlot(object = scdata.PN.5, cells.highlight = cseq.all.pre.filtered$V2.1, cols.highlight = "#00A9FF", cols = "gray", order = TRUE, raster=FALSE)+coord_fixed()
