@@ -1,0 +1,171 @@
+---
+title: "Purkinje_analysis_051225"
+output: html_document
+date: "2025-05-12"
+---
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(pheatmap)
+library(stringdist)
+library(Seurat)
+library("reticulate")
+library("patchwork")
+library("ggrepel")
+library(stringr)
+library(harmony)
+library(SeuratData)
+library(reticulate)
+library(SeuratWrappers)
+library(Matrix)
+library(edgeR)
+```
+
+Load all functions in PC_analysisFunc.R
+
+```{r}
+load("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/celltype_annotations.rdata")
+load("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/cseq.all.matched.BC.hamm2.RData")
+load("/data/R/CSeq_reanalyze/Pukinje cell/AAV1-Cere-Nuc.RData")
+cn_path_list <- c(
+  "/home/boxuan/data/cseq1/cseq1-CN2/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/Seagate Expansion Drive/data2/cseq25/cseq25-CN2/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/Seagate Expansion Drive/data2/cseq31/cseq31-CN-new/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/Seagate Expansion Drive/data2/cseq34/cseq34-1cn/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/Seagate Expansion Drive/data2/cseq34/cseq34-2cn/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/Seagate Expansion Drive/data2/cseq35/cseq35-CN3/outs/filtered_feature_bc_matrix/",
+  "/media/boxuan/Seagate Expansion Drive/data2/cseq36/cseq36-CN2/outs/filtered_feature_bc_matrix/"
+)
+```
+
+```{r}
+cn1 <- create_br_seurat(cn_path_list[1])
+cn25 <- create_br_seurat(cn_path_list[2], assay_type = "Custom")
+cn31 <- create_br_seurat(cn_path_list[3])
+cn34.1 <- create_br_seurat(cn_path_list[4], assay_type = "Custom")
+cn34.2 <- create_br_seurat(cn_path_list[5], assay_type = "Custom")
+cn34.2 <- RenameCells(cn34.2, new.names = setNames(sub('-1', '-2', Cells(cn34.2)), Cells(cn34.2)))
+cn35 <- create_br_seurat(cn_path_list[6], assay_type = "Custom")
+cn36 <- create_br_seurat(cn_path_list[7])
+
+cn.list <- c(cn1, cn25, cn31, cn34.1, cn34.2, cn35, cn36)
+
+cn.list <- lapply(cn.list, function(cn){
+  NormalizeData(cn) %>% FindVariableFeatures(selection.method = "vst") %>% ScaleData()
+})
+
+cell_ids = c("1","25","31","34","34","35","36")
+cn.all <- merge(x = cn.list[[1]], y = cn.list[-1], add.cell.ids = cell_ids, project = "Purkinje Cell Connectivity analysis")
+cn.all <- PercentageFeatureSet(cn.all, pattern = "^MT-", col.name = "percent.mt")
+cn.all1 <- subset(cn.all, nFeature_RNA > 100 & nFeature_RNA < 8000 & percent.mt <5)
+```
+
+```{r}
+pc9 <- subset(cn9, idents = "Purkinje")
+pc9$batch <- "9"
+pc9$connectivity <- "AAV1-labeled"
+pc9 <- RenameCells(pc9, add.cell.id = "9")
+```
+
+```{r}
+purkinje_barcodes <- row.names(celltype.cere.new[celltype.cere.new$cluster_type == "Purkinje", ])
+purkinje.cells <- subset(cn.all1, cells = purkinje_barcodes)
+purkinje.cells$batch <- sub("_.*", "", colnames(purkinje.cells))
+purkinje.cells$connectivity <- "Cseq-negative"
+purkinje.cells$connectivity[colnames(purkinje.cells) %in% cseq.all.post.single] <- "Cseq-positive"
+
+pcm <- merge(x=purkinje.cells, y=pc9) %>% JoinLayers()
+pcm[["RNA"]] <- split(pcm[["RNA"]], f = pcm$batch)
+pcm <- NormalizeData(pcm) %>% 
+  FindVariableFeatures() %>% 
+  ScaleData()
+
+pcm <- RunPCA(pcm) %>% 
+  FindNeighbors(dims = 1:30, reduction = "pca") %>% 
+  FindClusters(resolution = 1, cluster.name = "unintegrated_clusters")
+
+pcm <- RunUMAP(pcm, dims = 1:30, reduction = "pca", reduction.name = "umap.unintegrated")
+```
+
+```{r}
+#Integrate with scVI
+pcm.scvi <- IntegrateLayers(
+  object = pcm, method = scVIIntegration,
+  new.reduction = "integrated.scvi",
+  conda_env = "/home/boxuan/anaconda3/envs/r-reticulate/envs/scvi-env", verbose = FALSE
+)
+
+pcm.scvi <- FindNeighbors(pcm.scvi, reduction = "integrated.scvi", dims = 1:30) %>% 
+  FindClusters(resolution = 0.5, cluster.name = "scvi_cluster") %>% 
+  RunUMAP(reduction = "integrated.scvi", dims = 1:30, reduction.name = "umap.scvi")
+
+pcm.scvi$condition <- "Cseq"
+pcm.scvi$condition[pcm$batch=="9"] <- "AAV1"
+```
+
+```{r}
+connectivity_props <- table(
+  Idents(pcm.scvi),
+  pcm.scvi$connectivity) %>%
+  as.data.frame() %>%
+  tidyr::spread(Var2, Freq) %>%  # Spread the connectivity status into columns
+  mutate(percent_connected = `Cseq-positive` / (`Cseq-positive` + `Cseq-negative`) * 100)
+```
+
+```{r}
+pcm.scvi.joined <- pcm.scvi %>% JoinLayers()
+pcm.scvi.cseq <- subset(pcm.scvi.joined, batch != "9")
+
+pcm.scvi.imp <- pcm.scvi.cseq # imp -> imputation
+pcm.scvi.imp$connectivity <- "Cseq-negative"
+pcm.scvi.imp$connectivity[Idents(pcm.scvi.imp) %in% c("1","2","3","4","5","6")] <- "Cseq-positive"
+
+
+analyze_celltype_pc(pcm.scvi.cseq, pc9.scvi, "Purkinje")
+analyze_celltype_pc(pcm.scvi.imp, pc9.scvi, "Purkinje")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
