@@ -1,0 +1,1035 @@
+---
+title: "synaptosomes"
+output: html_document
+date: "2025-08-28"
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(ggplot2)
+library(fuzzyjoin)
+library(tidyr)
+library(pheatmap)
+library(stringdist)
+library(ggvenn)
+library(gridExtra)
+library(readr)
+`%notin%` <- Negate(`%in%`)
+```
+
+
+```{r}
+syn.post<-read.table('post.S1.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.pre<-read.table('pre.S1.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s2.post<-read.table('post.S2.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s2.post$V2 <- s2.post$V2 %>% stringr::str_replace_all("-1", "-35.2")
+s2.pre<-read.table('pre.S2.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s2.pre$V2 <- s2.pre$V2 %>% stringr::str_replace_all("-1", "-35.2")
+s3.post<-read.table('post.S3.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s3.post$V2 <- s3.post$V2 %>% stringr::str_replace_all("-1", "-35.3")
+s3.pre<-read.table('pre.S3.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s3.pre$V2 <- s3.pre$V2 %>% stringr::str_replace_all("-1", "-35.3")
+s4.post<-read.table('post.S4.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s4.post$V2 <- s4.post$V2 %>% stringr::str_replace_all("-1", "-35.4")
+s4.pre<-read.table('pre.S4.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+s4.pre$V2 <- s4.pre$V2 %>% stringr::str_replace_all("-1", "-35.4")
+
+syn.pre.35 <- merge(syn.pre, s2.pre, all=TRUE) %>% merge(s3.pre, all=TRUE) %>% merge(s4.pre, all=TRUE)
+syn.pre.35$V2 <- syn.pre.35$V2 %>% stringr::str_replace_all("-1", "-35.1")
+syn.pre.35$sample <- "35"
+syn.post.35 <- merge(syn.post, s2.post, all=TRUE) %>% merge(s3.post, all=TRUE) %>% merge(s4.post, all=TRUE)
+syn.post.35$V2 <- syn.post.35$V2 %>% stringr::str_replace_all("-1", "-35.1")
+syn.post.35$sample <- "35"
+
+```
+
+```{r}
+syn.post.36<-read.table('36.post.S2.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.post.36$V2 <- syn.post.36$V2 %>% stringr::str_replace_all("-1", "-36")
+syn.post.36$sample <- "36"
+syn.pre.36<-read.table('36.pre.S2.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.pre.36$V2 <- syn.pre.36$V2 %>% stringr::str_replace_all("-1", "-36")
+syn.pre.36$sample <- "36"
+```
+
+```{r}
+syn.post.34<-read.table('34.post.all.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.post.34$V2 <- syn.post.34$V2 %>% stringr::str_replace_all("-1", "-34")
+syn.post.34$sample <- "34"
+syn.pre.34<-read.table('34.pre.all.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.pre.34$V2 <- syn.pre.34$V2 %>% stringr::str_replace_all("-1", "-34")
+syn.pre.34$sample <- "34"
+
+syn.post.31<-read.table('31.post.all.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.post.31$V2 <- syn.post.31$V2 %>% stringr::str_replace_all("-1", "-31")
+syn.post.31$sample <- "31"
+syn.pre.31<-read.table('31.pre.all.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.pre.31$V2 <- syn.pre.31$V2 %>% stringr::str_replace_all("-1", "-31")
+syn.pre.31$sample <- "31"
+```
+
+```{r}
+syn.post.25<-read.table('25.synp.post.BC.table.hamming1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.post.25$V2 <- syn.post.25$V2 %>% stringr::str_replace_all("-1", "-25")
+syn.post.25$sample <- "25"
+syn.pre.25<-read.table('25.synp.pre.BC.table.hamming1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.pre.25$V2 <- syn.pre.25$V2 %>% stringr::str_replace_all("-1", "-25")
+syn.pre.25$sample <- "25"
+
+syn.post.1<-read.table('1.post.S.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.post.1$sample <- "1"
+syn.pre.1<-read.table('1.pre.S.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
+syn.pre.1$sample <- "1"
+```
+
+```{r}
+syn.pre.raw <- merge(syn.pre.1, syn.pre.25, all=TRUE) %>% merge(syn.pre.31, all=TRUE) %>% merge(syn.pre.34, all=TRUE) %>% merge(syn.pre.35, all=TRUE) %>% merge(syn.pre.36, all=TRUE)
+syn.post.raw <- merge(syn.post.1, syn.post.25, all=TRUE) %>% merge(syn.post.31, all=TRUE) %>% merge(syn.post.34, all=TRUE) %>% merge(syn.post.35, all=TRUE) %>% merge(syn.post.36, all=TRUE)
+```
+
+```{r}
+syn.pre.raw <- na.omit(syn.pre.raw)
+syn.post.raw <- na.omit(syn.post.raw)
+
+syn_post <- syn.post.raw %>%
+  group_by(V1, sample) %>%
+  summarise(count = n(), .groups = "drop")
+
+write.csv(syn_post, "./syn_post_n30.csv", row.names = FALSE)
+
+syn_pre <- syn.pre.raw %>%
+  group_by(V1, sample) %>%
+  summarise(count = n(), .groups = "drop")
+
+write.csv(syn_pre, "./syn_pre_n30.csv", row.names = FALSE)
+```
+
+```{r}
+syn_post_unique <- syn.post.raw %>%
+  group_by(V2) %>%
+  summarise(count = n_distinct(V1), .groups = "drop")
+
+write.csv(syn_post_unique, "./syn_post_distinct_n30.csv", row.names = FALSE)
+
+syn_pre_unique <- syn.pre.raw %>%
+  group_by(V2) %>%
+  summarise(count = n_distinct(V1), .groups = "drop")
+
+write.csv(syn_pre_unique, "./syn_pre_distinct_n30.csv", row.names = FALSE)
+```
+
+
+```{r}
+pre.rm_list <- unique(read_csv("/media/expansion/RNA_seq_processing/manuscript_update_082825/cseq.all.pre.discarded.090725.csv")$match)
+post.rm_list <- unique(read_csv("/media/expansion/RNA_seq_processing/manuscript_update_082825/cseq.all.post.discarded.090725.csv")$match)
+
+syn.pre.raw.filt <- syn.pre.raw[syn.pre.raw$V1 %notin% pre.rm_list, ]
+syn.post.raw.filt <- syn.post.raw[syn.post.raw$V1 %notin% post.rm_list, ]
+
+cat("removed:", nrow(syn.pre.raw) - nrow(syn.pre.raw.filt), "rows\n")
+cat("removed:", nrow(syn.post.raw) - nrow(syn.post.raw.filt), "rows\n")
+```
+
+```{r}
+syn.pre.raw <- syn.pre.raw.filt
+syn.post.raw <- syn.post.raw.filt
+```
+
+
+
+```{r}
+#decontaminate-#2, clean up synp reads by removing synp with more than 50 N30 associated, they will unlikely converge to the same Nuc 
+# For Post RNA data processing
+Post.synp.list <- syn.post.raw %>% 
+    group_by(V2) %>% 
+    mutate(N30_count = length(unique(V1))) %>%
+    ungroup()  # Ungroup to maintain data structure
+
+# Identify synapses to keep (those with ≤50 N30s)
+post_keep_synp <- Post.synp.list %>%
+    filter(N30_count <= 100) %>%
+    pull(V2) %>%
+    unique()
+
+# Regenerate syn.post while preserving all raw data columns
+syn.post <- syn.post.raw %>%
+    filter(V2 %in% post_keep_synp)
+
+# For Pre RNA data processing
+Pre.synp.list <- syn.pre.raw %>% 
+    group_by(V2) %>% 
+    mutate(N30_count = length(unique(V1))) %>%
+    ungroup()  # Ungroup to maintain data structure
+
+# Identify synapses to keep (those with ≤50 N30s)
+pre_keep_synp <- Pre.synp.list %>%
+    filter(N30_count <= 100) %>%
+    pull(V2) %>%
+    unique()
+
+# Regenerate syn.pre while preserving all raw data columns
+syn.pre <- syn.pre.raw %>%
+    filter(V2 %in% pre_keep_synp)
+
+# Create summary data frame
+summary_df <- data.frame(
+  Stage = c("Pre RNA", "Post RNA"),
+  N30_Before = c(length(unique(syn.pre.raw$V1)), length(unique(syn.post.raw$V1))),
+  N30_After = c(length(unique(syn.pre$V1)), length(unique(syn.post$V1))),
+  Synp_Before = c(length(unique(syn.pre.raw$V2)), length(unique(syn.post.raw$V2))),
+  Synp_After = c(length(unique(syn.pre$V2)), length(unique(syn.post$V2)))
+)
+
+# Add percentage change columns
+summary_df$N30_Change <- sprintf("%.1f%%", 
+  (summary_df$N30_After - summary_df$N30_Before) / summary_df$N30_Before * 100)
+summary_df$Synp_Change <- sprintf("%.1f%%", 
+  (summary_df$Synp_After - summary_df$Synp_Before) / summary_df$Synp_Before * 100)
+
+# Print formatted table
+print(summary_df)
+```
+
+```{r}
+syn_post <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(postbar_umi_count = n_distinct(postbar_umi), .groups = "drop")
+
+write.csv(syn_post, "./syn_post.csv", row.names = FALSE)
+
+syn_pre <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(prebar_umi_count = n_distinct(prebar_umi), .groups = "drop")
+
+write.csv(syn_pre, "./syn_pre.csv", row.names = FALSE)
+```
+
+```{r}
+syn_post <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(postbar_umi_count = n_distinct(postbar_umi), .groups = "drop")
+
+write.csv(syn_post, "./syn_post.csv", row.names = FALSE)
+
+syn_pre <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(prebar_umi_count = n_distinct(prebar_umi), .groups = "drop")
+
+write.csv(syn_pre, "./syn_pre.csv", row.names = FALSE)
+```
+
+
+
+```{r}
+save (syn.pre, syn.post, file="all_merged_synaptosomes.RData")
+```
+
+```{r}
+# Rename columns for clarity
+syn.pre <- syn.pre %>%
+  rename(
+    N30 = V1,
+    barcode = V2,
+    prebar_umi = V3,
+    prebar_reads = V4
+  )
+
+syn.post <- syn.post %>%
+  rename(
+    N30 = V1,
+    barcode = V2,
+    postbar_umi = V3,
+    postbar_reads = V4
+  )
+
+```
+
+
+
+## Basic Summary Statistics
+```{r}
+# Basic data summary
+cat("Pre-synaptic data summary:\n")
+cat("Total entries:", nrow(syn.pre), "\n")
+cat("Unique barcodes:", length(unique(syn.pre$barcode)), "\n")
+cat("Unique N30s:", length(unique(syn.pre$N30)), "\n\n")
+
+cat("Post-synaptic data summary:\n")
+cat("Total entries:", nrow(syn.post), "\n")
+cat("Unique barcodes:", length(unique(syn.post$barcode)), "\n")
+cat("Unique N30s:", length(unique(syn.post$N30)), "\n")
+```
+
+## 1. Synaptosome Overlap Analysis
+```{r}
+# Get unique barcodes (synaptosomes) for each type
+pre_synaptosomes <- unique(syn.pre$barcode)
+post_synaptosomes <- unique(syn.post$barcode)
+
+# Prepare data for venn diagram
+synaptosome_sets <- list(
+  Prebar = pre_synaptosomes,
+  Postbar = post_synaptosomes
+)
+
+# Create venn diagram
+ggvenn(synaptosome_sets,
+       fill_color = c("steelblue", "darkgreen"),
+       stroke_size = 0.5,
+       set_name_size = 4,
+       show_percentage = TRUE,
+       text_size = 8)
+ggsave("Venn.png", height = 8, width = 12)
+# Print numerical summary
+cat(sprintf("\nSynaptosome overlap summary:\n"))
+cat(sprintf("Unique synaptosomes with prebar: %d\n", length(pre_synaptosomes)))
+cat(sprintf("Unique synaptosomes with postbar: %d\n", length(post_synaptosomes)))
+cat(sprintf("Synaptosomes with both: %d\n", length(intersect(pre_synaptosomes, post_synaptosomes))))
+```
+
+## 2. UMI Distribution per Synaptosome
+```{r}
+# Calculate total UMIs per synaptosome
+pre_umi_totals <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(total_prebar_umis = n())
+
+post_umi_totals <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(total_postbar_umis = n())
+
+# Combine the data
+combined_umi_totals <- full_join(pre_umi_totals, post_umi_totals, by = "barcode") %>%
+  replace_na(list(total_prebar_umis = 0, total_postbar_umis = 0))
+
+# Create scatter plot with density
+p1 <- ggplot(combined_umi_totals, aes(x = total_prebar_umis, y = total_postbar_umis)) +
+  geom_point(alpha = 0.3, color = "darkgrey") +
+  geom_density_2d(color = "blue", alpha = 0.5) +
+  scale_x_log10() +
+  scale_y_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 16)) +
+  labs(title = "Pre/Post UMIs per Synaptosome",
+       x = "Prebar UMIs (log10)",
+       y = "Postbar UMIs (log10)")
+
+# Create marginal distributions
+p2 <- ggplot(combined_umi_totals, aes(x = total_prebar_umis)) +
+  geom_histogram(fill = "steelblue", alpha = 0.7, bins = 50) +
+  scale_x_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 16)) +
+  labs(title = "Prebar UMIs Distribution",
+       x = "Number of UMIs (log10)",
+       y = "Count")
+
+p3 <- ggplot(combined_umi_totals, aes(x = total_postbar_umis)) +
+  geom_histogram(fill = "darkgreen", alpha = 0.7, bins = 50) +
+  scale_x_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 16)) +
+  labs(title = "Postbar UMIs Distribution",
+       x = "Number of UMIs (log10)",
+       y = "Count")
+
+plot <- grid.arrange(p1, arrangeGrob(p2, p3, ncol=2), heights=c(2,1))
+ggsave("distribution.png", plot, height = 8, width = 12)
+# Print summary statistics
+cat("\nUMI Distribution Summary:\n")
+cat("\nPrebar UMIs per synaptosome:\n")
+print(summary(combined_umi_totals$total_prebar_umis))
+cat("\nPostbar UMIs per synaptosome:\n")
+print(summary(combined_umi_totals$total_postbar_umis))
+```
+
+```{r}
+## Updated Version 092125
+# packages
+library(dplyr)
+library(MASS)     # kde2d
+library(plotly)   # 3D surface
+library(htmlwidgets)
+
+# --- 1) Your prep (unchanged) ---
+pre_umi_totals <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(total_prebar_umis = n(), .groups = "drop")
+
+post_umi_totals <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(total_postbar_umis = n(), .groups = "drop")
+
+combined_umi_totals <- full_join(pre_umi_totals, post_umi_totals, by = "barcode") %>%
+  tidyr::replace_na(list(total_prebar_umis = 0, total_postbar_umis = 0))
+
+# --- 2) Log-transform (+1 to keep zeros) ---
+df <- combined_umi_totals %>%
+  transmute(
+    x = log10(total_prebar_umis + 1),
+    y = log10(total_postbar_umis + 1)
+  ) %>%
+  filter(is.finite(x), is.finite(y))
+
+# (Optional) If you have millions of rows, subsample for speed:
+# set.seed(1); df <- df %>% dplyr::slice_sample(n = 200000)
+
+# --- 3) Kernel density on a grid ---
+hx <- bw.nrd(df$x); hy <- bw.nrd(df$y)     # Silverman ROT per axis
+bw_scale <- 0.7
+dens <- with(df, kde2d(x, y, n = 250, h = c(hx, hy) * bw_scale))
+
+# --- 4) Log-scale the density so small positives are visible ---
+z_log <- log10(dens$z + 1)
+
+# --- 5) Colorscale with immediate tint above zero ---
+min_pos <- suppressWarnings(min(z_log[dens$z > 0], na.rm = TRUE))
+zmax    <- max(z_log, na.rm = TRUE)
+knee    <- if (is.finite(min_pos) && zmax > 0) min(0.03, (min_pos / zmax) * 2) else 0.02
+cs <- list(
+  c(0.00, "white"),
+  c(knee, "#f0f9e8"),
+  c(0.25, "#bae4bc"),
+  c(0.60, "#7bccc4"),
+  c(1.00, "#0868ac")
+)
+
+# --- 6) Publication styling knobs ---
+title_size      <- 24
+axis_title_size <- 20
+tick_size       <- 16
+cb_title_size   <- 16
+cb_tick_size    <- 14
+
+# Try a bold variant for ticks/legend (falls back to Arial if missing)
+font_regular <- "Arial, sans-serif"
+font_bold    <- "Arial Bold, Arial Black, Arial, sans-serif"
+
+x_ticks <- pretty(range(dens$x),  n = 4)
+y_ticks <- pretty(range(dens$y),  n = 4)
+z_ticks <- pretty(range(z_log),   n = 4)
+
+# --- 7) 3D surface ---
+p3d <- plot_ly(
+  x = dens$x, y = dens$y, z = z_log,
+  type = "surface",
+  colorscale = cs,
+  cmin = 0, cmax = max(z_log),
+  contours = list(
+    z = list(
+      show = TRUE,
+      usecolormap = FALSE,
+      color = "black",
+      width = 1,
+      project = list(z = TRUE)
+    )
+  ),
+  colorbar = list(
+    title = list(text = "<b>log10(Density + 1)</b>", font = list(size = cb_title_size, family = font_bold)),
+    tickfont = list(size = cb_tick_size, family = font_bold)
+  )
+) %>%
+  layout(
+    paper_bgcolor = "white",
+    font  = list(size = tick_size, family = font_regular),
+
+    title = list(
+      text = "<b>3D Log-Density of Pre/Post UMIs per Synaptosome</b>",
+      font = list(size = title_size, family = font_bold)
+    ),
+
+    scene = list(
+      # Clean, “Nature Methods” style axes:
+      xaxis = list(
+        title    = list(text = "<b>log10(PreRNA UMIs + 1)</b>", font = list(size = axis_title_size, family = font_bold)),
+        tickvals = x_ticks,
+        ticktext = sprintf("%.0f", x_ticks),
+        tickfont = list(size = tick_size, family = font_bold),
+        showgrid = TRUE, gridcolor = "rgba(0,0,0,0.12)", gridwidth = 1,
+        zeroline = FALSE,
+        showline = TRUE, linecolor = "black", linewidth = 2,
+        ticks = "outside", tickcolor = "black", tickwidth = 2, ticklen = 6,
+        backgroundcolor = "white"
+      ),
+      yaxis = list(
+        title    = list(text = "<b>log10(PostRNA UMIs + 1)</b>", font = list(size = axis_title_size, family = font_bold)),
+        tickvals = y_ticks,
+        ticktext = sprintf("%.0f", y_ticks),
+        tickfont = list(size = tick_size, family = font_bold),
+        showgrid = TRUE, gridcolor = "rgba(0,0,0,0.12)", gridwidth = 1,
+        zeroline = FALSE,
+        showline = TRUE, linecolor = "black", linewidth = 2,
+        ticks = "outside", tickcolor = "black", tickwidth = 2, ticklen = 6,
+        backgroundcolor = "white"
+      ),
+      zaxis = list(
+        title    = list(text = "<b>log10(Density + 1)</b>", font = list(size = axis_title_size, family = font_bold)),
+        tickvals = z_ticks,
+        ticktext = sprintf("%.0f", z_ticks),
+        tickfont = list(size = tick_size, family = font_bold),
+        showgrid = TRUE, gridcolor = "rgba(0,0,0,0.12)", gridwidth = 1,
+        zeroline = FALSE,
+        showline = TRUE, linecolor = "black", linewidth = 2,
+        ticks = "outside", tickcolor = "black", tickwidth = 2, ticklen = 6,
+        backgroundcolor = "white"
+      ),
+      # A camera angle that reads well on paper
+      camera = list(eye = list(x = 1.6, y = 1.6, z = 1.2))
+    ),
+    margin = list(l = 10, r = 10, b = 10, t = 40)
+  )
+
+p3d
+
+# Save a standalone HTML (keeps fonts as system/browser fonts)
+htmlwidgets::saveWidget(p3d, "pre_post_density.html", selfcontained = TRUE)
+
+
+```
+
+
+```{r}
+# packages
+library(dplyr)
+library(MASS)     # kde2d
+library(plotly)   # 3D surface
+
+# 1) Your prep (unchanged)
+pre_umi_totals <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(total_prebar_umis = n(), .groups = "drop")
+
+post_umi_totals <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(total_postbar_umis = n(), .groups = "drop")
+
+combined_umi_totals <- full_join(pre_umi_totals, post_umi_totals, by = "barcode") %>%
+  tidyr::replace_na(list(total_prebar_umis = 0, total_postbar_umis = 0))
+
+# 2) Log-transform (+1 to keep zeros)
+df <- combined_umi_totals %>%
+  transmute(
+    x = log10(total_prebar_umis + 1),
+    y = log10(total_postbar_umis + 1)
+  ) %>%
+  filter(is.finite(x), is.finite(y))
+
+# (Optional) If you have millions of rows, subsample for speed:
+# set.seed(1); df <- df %>% slice_sample(n = 200000)
+
+# 3) Kernel density on a grid
+# Choose grid resolution (n) and bandwidth (h). Increase n for smoother surface.
+hx <- bw.nrd(df$x); hy <- bw.nrd(df$y)      # Silverman ROT per axis
+bw_scale <- 0.7                              # tweak 0.5–1.2 as needed
+dens <- with(df, kde2d(x, y, n = 250, h = c(hx, hy) * bw_scale))
+
+# 4) Log-scale the density so small positives are visible
+z_log <- log10(dens$z+1)                       # log(1 + density); zero -> 0
+
+# 5) Colors: force any non-zero to differ from exact zero
+min_pos <- suppressWarnings(min(z_log[dens$z > 0], na.rm = TRUE))
+zmax    <- max(z_log, na.rm = TRUE)
+knee    <- if (is.finite(min_pos) && zmax > 0) min(0.03, (min_pos / zmax) * 2) else 0.02
+cs <- list(
+  c(0.00, "white"),      # exact zero
+  c(knee, "#f0f9e8"),    # immediately tint >0
+  c(0.25, "#bae4bc"),
+  c(0.60, "#7bccc4"),
+  c(1.00, "#0868ac")
+)
+
+# 6) 3D “mountain” with base-plane contours always visible
+# --- Bigger fonts + fewer tick labels on all axes ---
+
+# Choose sizes (tweak as you like)
+title_size      <- 24
+axis_title_size <- 20
+tick_size       <- 16
+cb_title_size   <- 16
+cb_tick_size    <- 14
+
+# Pick ~4 ticks per axis using pretty()
+x_ticks <- pretty(range(dens$x),  n = 4)
+y_ticks <- pretty(range(dens$y),  n = 4)
+z_ticks <- pretty(range(z_log),   n = 4)
+
+p3d <- plot_ly(
+  x = dens$x, y = dens$y, z = z_log,
+  type = "surface",
+  colorscale = cs,              # keep your custom colorscale
+  cmin = 0, cmax = max(z_log),
+  contours = list(
+    z = list(
+      show = TRUE,
+      usecolormap = FALSE,      # fixed contour color (change if you prefer)
+      color = "black",
+      width = 1,
+      project = list(z = TRUE)
+    )
+  ),
+  # Style the colorbar text sizes
+  colorbar = list(
+    title = list(text = "log10(Density + 1)", font = list(size = cb_title_size)),
+    tickfont = list(size = cb_tick_size)
+  )
+) %>%
+  layout(
+    font  = list(size = tick_size),  # global default
+    title = list(text = "3D Log-Density of Pre/Post UMIs per Synaptosome",
+                 font = list(size = title_size)),
+    scene = list(
+      xaxis = list(
+        title    = list(text = "log10(Prebar UMIs + 1)", font = list(size = axis_title_size)),
+        tickvals = x_ticks,
+        ticktext = sprintf("%.0f", x_ticks),
+        tickfont = list(size = tick_size)
+      ),
+      yaxis = list(
+        title    = list(text = "log10(Postbar UMIs + 1)", font = list(size = axis_title_size)),
+        tickvals = y_ticks,
+        ticktext = sprintf("%.0f", y_ticks),
+        tickfont = list(size = tick_size)
+      ),
+      zaxis = list(
+        title    = list(text = "log10(Density + 1)", font = list(size = axis_title_size)),
+        tickvals = z_ticks,
+        ticktext = sprintf("%.0f", z_ticks),
+        tickfont = list(size = tick_size)
+      ),
+      camera = list(eye = list(x = 1.6, y = 1.6, z = 1.2))
+    ),
+    margin = list(l = 10, r = 10, b = 10, t = 40)
+  )
+
+p3d
+
+htmlwidgets::saveWidget(p3d, "pre_post_density.html", selfcontained = TRUE)
+```
+
+
+
+## 3. N30 Diversity Analysis
+```{r}
+# Calculate unique N30s per synaptosome
+pre_n30_diversity <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_n30s = n_distinct(N30),
+    total_umis = n()
+  )
+
+post_n30_diversity <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_n30s = n_distinct(N30),
+    total_umis = n()
+  )
+
+# Plot N30 diversity vs UMIs
+p1 <- ggplot() +
+  geom_point(data = pre_n30_diversity, 
+             aes(x = total_umis, y = unique_n30s, color = "Prebar"), 
+             alpha = 0.3) +
+  geom_point(data = post_n30_diversity, 
+             aes(x = total_umis, y = unique_n30s, color = "Postbar"), 
+             alpha = 0.3) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_manual(values = c("steelblue", "darkgreen"), name = "Type") +
+  theme_minimal() +
+  theme(text = element_text(size = 20)) +
+  labs(title = "N30 Diversity vs Total UMIs",
+       x = "Total UMIs (log10)",
+       y = "Unique N30s (log10)")
+
+# Plot N30 distributions
+p2 <- ggplot() +
+  geom_density(data = pre_n30_diversity, 
+               aes(x = unique_n30s, fill = "Prebar"), 
+               alpha = 0.5) +
+  geom_density(data = post_n30_diversity, 
+               aes(x = unique_n30s, fill = "Postbar"), 
+               alpha = 0.5) +
+  scale_x_log10() +
+  scale_fill_manual(values = c("steelblue", "darkgreen"), name = "Type") +
+  theme_minimal() +
+  theme(text = element_text(size = 20)) +
+  labs(title = "N30 Diversity Distribution",
+       x = "Unique N30s (log10)",
+       y = "Density")
+
+plot <- grid.arrange(p1, p2, ncol=2)
+ggsave("diversity.png", plot, height = 8, width = 12)
+# Print summary statistics
+cat("N30 Diversity Summary:\n")
+cat("\nPrebar N30s per synaptosome:\n")
+print(summary(pre_n30_diversity$unique_n30s))
+cat("\nPostbar N30s per synaptosome:\n")
+print(summary(post_n30_diversity$unique_n30s))
+```
+
+
+```{r}
+# ---- packages ----
+library(dplyr)
+library(ggplot2)
+
+# Optional (recommended) font setup for guaranteed Arial + bold
+# Falls back gracefully if packages aren't available.
+if (requireNamespace("showtext", quietly = TRUE) &&
+    requireNamespace("systemfonts", quietly = TRUE) &&
+    requireNamespace("sysfonts", quietly = TRUE)) {
+  library(showtext); library(systemfonts); library(sysfonts)
+  # try to locate Arial on the system
+  sf <- system_fonts()
+  arial_reg  <- dplyr::filter(sf, grepl("Arial", family, ignore.case = TRUE), style == "Regular") |> dplyr::slice(1)
+  arial_bold <- dplyr::filter(sf, grepl("Arial", family, ignore.case = TRUE), grepl("Bold", style, ignore.case = TRUE)) |> dplyr::slice(1)
+  if (nrow(arial_reg) == 1 && nrow(arial_bold) == 1) {
+    sysfonts::font_add(family = "Arial", regular = arial_reg$path, bold = arial_bold$path)
+    showtext_auto()
+  }
+}
+
+# ---- calculate complexity metrics (unchanged math) ----
+pre_complexity <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(prebar_reads),
+    reads_per_umi = total_reads / unique_umis,
+    .groups = "drop"
+  ) %>%
+  mutate(group = "PreRNA")
+
+post_complexity <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(postbar_reads),
+    reads_per_umi = total_reads / unique_umis,
+    .groups = "drop"
+  ) %>%
+  mutate(group = "PostRNA")
+
+# Combine for plotting (gives a legend)
+complexity_df <- bind_rows(pre_complexity, post_complexity)
+complexity_df$group <- factor(complexity_df$group, levels = c("PreRNA", "PostRNA"))
+
+# Colors (feel free to swap to your standard blue/orange palette)
+fill_vals <- c("PreRNA" = "#1f77b4", "PostRNA" = "#ff7f0e")
+line_vals <- c("PreRNA" = "#1f77b4", "PostRNA" = "#ff7f0e")
+
+# ---- plot ----
+p <- ggplot(complexity_df, aes(x = group, y = reads_per_umi, fill = group)) +
+  geom_violin(alpha = 0.5, color = NA, width = 0.9, trim = TRUE) +
+  geom_boxplot(width = 0.15, alpha = 0.9, outlier.shape = NA, aes(color = group), fill = "white") +
+  scale_fill_manual(values = fill_vals, guide = guide_legend(title = NULL)) +
+  scale_color_manual(values = line_vals, guide = "none") +
+  scale_y_log10() +
+  labs(
+    title = "Reads per UMI Distribution",
+    x = NULL,
+    y = "Reads per UMI (log10)"
+  ) +
+  theme_bw(base_size = 20, base_family = "Arial") +
+  theme(
+    # Title + axis titles bold
+    plot.title   = element_text(face = "bold", hjust = 0.5),
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+
+    # Tick labels bold
+    axis.text.x  = element_text(face = "bold"),
+    axis.text.y  = element_text(face = "bold"),
+
+    # Legend text/title bold
+    legend.text  = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+
+    # Clean, publication-like look
+    panel.grid.major = element_line(color = "grey85", linewidth = 0.4),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(linewidth = 0.6, color = "black"),
+    axis.line  = element_line(linewidth = 0.8, color = "black")
+  )
+
+print(p)
+ggsave("complexity.png", plot = p, height = 8, width = 12, dpi = 300)
+
+# ---- summary statistics (unchanged) ----
+cat("\nComplexity Summary:\n")
+cat("\nPrebar reads per UMI:\n")
+print(summary(pre_complexity$reads_per_umi))
+cat("\nPostbar reads per UMI:\n")
+print(summary(post_complexity$reads_per_umi))
+
+```
+
+
+
+## 4. UMI Complexity Analysis
+```{r}
+# Calculate complexity metrics
+pre_complexity <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(prebar_reads),
+    reads_per_umi = total_reads/unique_umis
+  )
+
+post_complexity <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(postbar_reads),
+    reads_per_umi = total_reads/unique_umis
+  )
+
+# Plot reads per UMI distribution
+ggplot() +
+  geom_violin(data = pre_complexity, 
+              aes(x = "Prebar", y = reads_per_umi), 
+              fill = "steelblue", alpha = 0.5) +
+  geom_violin(data = post_complexity, 
+              aes(x = "Postbar", y = reads_per_umi), 
+              fill = "darkgreen", alpha = 0.5) +
+  geom_boxplot(data = pre_complexity, 
+               aes(x = "Prebar", y = reads_per_umi), 
+               width = 0.1, alpha = 0.8) +
+  geom_boxplot(data = post_complexity, 
+               aes(x = "Postbar", y = reads_per_umi), 
+               width = 0.1, alpha = 0.8) +
+  scale_y_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 20)) +
+  labs(title = "Reads per UMI Distribution",
+       x = "",
+       y = "Reads per UMI (log10)")
+ggsave("complexity.png", height = 8, width = 12)
+# Print summary statistics
+cat("\nComplexity Summary:\n")
+cat("\nPrebar reads per UMI:\n")
+print(summary(pre_complexity$reads_per_umi))
+cat("\nPostbar reads per UMI:\n")
+print(summary(post_complexity$reads_per_umi))
+```
+
+
+```{r}
+# ---- packages ----
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+# Optional font setup (ensures Arial bold is used if installed)
+if (requireNamespace("showtext", quietly = TRUE) &&
+    requireNamespace("systemfonts", quietly = TRUE) &&
+    requireNamespace("sysfonts", quietly = TRUE)) {
+  library(showtext); library(systemfonts); library(sysfonts)
+  sf <- system_fonts()
+  arial_reg  <- dplyr::filter(sf, grepl("Arial", family, ignore.case = TRUE), style == "Regular") |> dplyr::slice(1)
+  arial_bold <- dplyr::filter(sf, grepl("Arial", family, ignore.case = TRUE), grepl("Bold", style, ignore.case = TRUE)) |> dplyr::slice(1)
+  if (nrow(arial_reg) == 1 && nrow(arial_bold) == 1) {
+    sysfonts::font_add(family = "Arial", regular = arial_reg$path, bold = arial_bold$path)
+    showtext_auto()
+  }
+}
+
+# ---- load data ----
+nuc.pre <- read_csv("./preNucHamm1.csv")
+nuc.post <- read_csv("./postNucHamm1.csv")
+
+pn_neuron_barcodes <- readLines("./pn_neuron_barcodes.txt")
+cn_neuron_barcodes <- readLines("./cn_neuron_barcodes.txt")
+
+# If filtering by neuron barcodes, uncomment:
+# nuc.pre <- nuc.pre[nuc.pre$barcode %in% pn_neuron_barcodes,]
+# nuc.post <- nuc.post[nuc.post$barcode %in% cn_neuron_barcodes,]
+
+# ---- calculate complexity metrics ----
+pre_complexity <- nuc.pre %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(prebar_reads),
+    reads_per_umi = total_reads / unique_umis,
+    .groups = "drop"
+  ) %>%
+  mutate(group = "PreRNA")
+
+post_complexity <- nuc.post %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(postbar_reads),
+    reads_per_umi = total_reads / unique_umis,
+    .groups = "drop"
+  ) %>%
+  mutate(group = "PostRNA")
+
+complexity_df <- bind_rows(pre_complexity, post_complexity)
+complexity_df$group <- factor(complexity_df$group, levels = c("PreRNA", "PostRNA"))
+
+# ---- plot ----
+fill_vals <- c("PreRNA" = "#1f77b4", "PostRNA" = "#ff7f0e")
+line_vals <- c("PreRNA" = "#1f77b4", "PostRNA" = "#ff7f0e")
+
+p <- ggplot(complexity_df, aes(x = group, y = reads_per_umi, fill = group)) +
+  geom_violin(alpha = 0.5, color = NA, width = 0.9, trim = TRUE) +
+  geom_boxplot(width = 0.15, alpha = 0.9, outlier.shape = NA, aes(color = group), fill = "white") +
+  scale_fill_manual(values = fill_vals, guide = guide_legend(title = NULL)) +
+  scale_color_manual(values = line_vals, guide = "none") +
+  scale_y_log10() +
+  labs(
+    title = "Reads per UMI Distribution",
+    x = NULL,
+    y = "Reads per UMI (log10)"
+  ) +
+  theme_bw(base_size = 20, base_family = "Arial") +
+  theme(
+    plot.title   = element_text(face = "bold", hjust = 0.5),
+    axis.title.x = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold"),
+    axis.text.x  = element_text(face = "bold"),
+    axis.text.y  = element_text(face = "bold"),
+    legend.text  = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "grey85", linewidth = 0.4),
+    panel.grid.minor = element_blank(),
+    axis.ticks   = element_line(linewidth = 0.6, color = "black"),
+    axis.line    = element_line(linewidth = 0.8, color = "black")
+  )
+
+print(p)
+ggsave("nuc_complexity.png", plot = p, height = 8, width = 12, dpi = 300)
+
+# ---- summary statistics ----
+cat("\nComplexity Summary:\n")
+cat("\nPrebar reads per UMI:\n")
+print(summary(pre_complexity$reads_per_umi))
+cat("\nPostbar reads per UMI:\n")
+print(summary(post_complexity$reads_per_umi))
+
+```
+
+
+
+## 4.1. UMI Complexity Analysis (Nuc)
+```{r}
+# Calculate complexity metrics
+nuc.pre <- read_csv("./preNucHamm1.csv")
+nuc.post <- read_csv("./postNucHamm1.csv")
+
+pn_neuron_barcodes <- readLines("./pn_neuron_barcodes.txt")
+cn_neuron_barcodes <- readLines("./cn_neuron_barcodes.txt")
+
+#nuc.pre <- nuc.pre[nuc.pre$barcode %in% pn_neuron_barcodes,]
+#nuc.post <- nuc.post[nuc.post$barcode %in% cn_neuron_barcodes,]
+
+
+pre_complexity <- nuc.pre %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(prebar_reads),
+    reads_per_umi = total_reads/unique_umis
+  )
+
+post_complexity <- nuc.post %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n(),
+    total_reads = sum(postbar_reads),
+    reads_per_umi = total_reads/unique_umis
+  )
+
+# Plot reads per UMI distribution
+ggplot() +
+  geom_violin(data = pre_complexity, 
+              aes(x = "Prebar", y = reads_per_umi), 
+              fill = "steelblue", alpha = 0.5) +
+  geom_violin(data = post_complexity, 
+              aes(x = "Postbar", y = reads_per_umi), 
+              fill = "darkgreen", alpha = 0.5) +
+  geom_boxplot(data = pre_complexity, 
+               aes(x = "Prebar", y = reads_per_umi), 
+               width = 0.1, alpha = 0.8) +
+  geom_boxplot(data = post_complexity, 
+               aes(x = "Postbar", y = reads_per_umi), 
+               width = 0.1, alpha = 0.8) +
+  scale_y_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 20)) +
+  labs(title = "Reads per UMI Distribution",
+       x = "",
+       y = "Reads per UMI (log10)")
+ggsave("nuc_complexity.png", height = 8, width = 12)
+# Print summary statistics
+cat("\nComplexity Summary:\n")
+cat("\nPrebar reads per UMI:\n")
+print(summary(pre_complexity$reads_per_umi))
+cat("\nPostbar reads per UMI:\n")
+print(summary(post_complexity$reads_per_umi))
+```
+
+
+## 5. UMI vs Read Count Correlation
+```{r}
+# Simple histogram of read counts
+p1 <- ggplot(syn.pre %>% filter(prebar_reads > 0), 
+             aes(x = prebar_reads)) +
+  geom_histogram(fill = "steelblue", alpha = 0.7, bins = 50) +
+  scale_x_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 20)) +
+  labs(title = "Prebar Read Count Distribution",
+       x = "Reads per entry (log10)",
+       y = "Count")
+ggsave("pre distribution.png", height = 8, width = 12)
+p2 <- ggplot(syn.post %>% filter(postbar_reads > 0), 
+             aes(x = postbar_reads)) +
+  geom_histogram(fill = "darkgreen", alpha = 0.7, bins = 50) +
+  scale_x_log10() +
+  theme_minimal() +
+  theme(text = element_text(size = 20)) +
+  labs(title = "Postbar Read Count Distribution",
+       x = "Reads per entry (log10)",
+       y = "Count")
+ggsave("post distribution.png", height = 8, width = 12)
+# Print each plot separately
+print(p1)
+print(p2)
+
+
+# Summary statistics
+cat("\nRead count statistics:\n")
+cat("\nPrebar reads per entry:")
+print(summary(syn.pre$prebar_reads))
+cat("\nPostbar reads per entry:")
+print(summary(syn.post$postbar_reads))
+
+# Count unique UMIs and their median read counts
+pre_umi_stats <- syn.pre %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n_distinct(prebar_umi),
+    total_reads = sum(prebar_reads, na.rm=TRUE),
+    median_reads = median(prebar_reads, na.rm=TRUE)
+  )
+
+post_umi_stats <- syn.post %>%
+  group_by(barcode) %>%
+  summarise(
+    unique_umis = n_distinct(postbar_umi),
+    total_reads = sum(postbar_reads, na.rm=TRUE),
+    median_reads = median(postbar_reads, na.rm=TRUE)
+  )
+
+cat("\nUnique UMIs per barcode summary:\n")
+cat("\nPrebar:")
+print(summary(pre_umi_stats$unique_umis))
+cat("\nPostbar:")
+print(summary(post_umi_stats$unique_umis))
+```
