@@ -78,16 +78,3 @@ Purkinje cells are extracted from annotated snRNA-seq data and processed with **
 
 ---
 
-## Repository Structure
-├── BC_collapse.py
-├── cseq_NucUMIClean.ipynb
-├── cseq_synaptosome.Rmd
-├── cseq_HarmonyIntegration.Rmd
-├── cseq_Annotation.Rmd
-├── cseq_Cluster.Rmd
-├── cseq_Match.Rmd
-├── cseq_PurkinjeAnalysis.Rmd
-├── cseq_Rfunction.R
-├── cseq_VirusLib.ipynb
-├── cseq_preseq.sh
-└── README.md
