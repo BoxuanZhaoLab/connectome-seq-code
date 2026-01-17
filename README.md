@@ -1,6 +1,7 @@
 # Connectome-seq Code
 
 ## Overview
+Please refer to https://github.com/BoxuanZhaoLab/connectome-demo-with-cseq25 for detailed barcode pre-processing analysis.
 The core function of this codebase is to generate single-cell level connectome information based on gene and barcode information from single-nucleus and single-synaptosome sequencing.
 
 ---
