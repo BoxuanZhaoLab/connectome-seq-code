@@ -108,6 +108,8 @@ gunzip barcodes.tsv.gz
    - **Filtered** `barcodes.tsv` from nucleus samples
    - **Unfiltered (raw)** `barcodes.tsv` from synaptosome samples
 
+---
+
 ### Step 3. `connectome.py`
 
 ```bash
@@ -117,6 +119,8 @@ gunzip barcodes.tsv.gz
 #### Instructions
 
 1. Extract reads and collapse barcodes at a given Hamming distance.
+
+---
 
 ### Step 4.1. `cseq_synaptosome.Rmd`
 
@@ -135,6 +139,8 @@ gunzip barcodes.tsv.gz
    - `CN.umi.csv`  
    - `PN.umi.csv`  
    These serve as input for **`cseq_Match.Rmd`**, where cell barcodes undergo disambiguous assignment and cleaned barcode information is generated.
+
+---
 
 ### Step 5. `cseq_Match.Rmd`
 
