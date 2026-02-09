@@ -1,25 +1,8 @@
 ---
-title: "new_match_Joe_041825"
+title: "new_match_Joe_010426.Rmd"
 output: html_document
-date: "2025-04-18"
+date: "2026-01-04"
 ---
-(add this: )
-#load raw barcode reads data
-PN1<-read.table('pons.pre.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F, fill = TRUE )
-CN1<-read.table('cere.post.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F,fill = TRUE )
-s1.post<-read.table('post.S.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
-s1.pre<-read.table('pre.S.barcodes.hamm1.txt', header=F, sep="\t",row.names=NULL,stringsAsFactors = F)
-
-### Remove wrong bam lines
-PN1<-PN1[!grepl('CY:Z',PN1$V2),]
-CN1<-CN1[!grepl('CY:Z',CN1$V2),]
-s1.post<-s1.post[!grepl('CY:Z',s1.post$V2),]
-s1.pre<-s1.pre[!grepl('CY:Z',s1.pre$V2),]
-
-#for Nuc barcode assignment, when one N30 present in multiple Nuc, only assign to top Nuc when top count is >a certain fold than second top, otherwise discard this N30. (avoid collision and missed true Nuc)
-PN1.no.1<-PN1 %>% group_by(V1,V2) %>% summarize(totalcount=sum(V4))
-
-#main function for matching at different hamm distance
 ```{r setup, include=FALSE, warning=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(dplyr)
@@ -43,6 +26,7 @@ every_nth = function(n) {
   return(function(x) {x[c(TRUE, rep(FALSE, n - 1))]})
 }
 ```
+
 #main function for matching at different hamm distance
 ```{r,echo = FALSE}
 #' Calculate Hamming distance between sequences efficiently
@@ -60,15 +44,15 @@ hamming_distance_vec <- function(query_prefix, ref_prefixes) {
 }
 
 #' Choose the best match when multiple matches are found
-#' Selection is based on totalcount (frequency) and celltype information
+#' Selection is based on UMI_Count (frequency) and celltype information
 
 select_best_match <- function(candidates) {
   # If only one candidate, return its index
-    if (nrow(candidates) == 1) return(1)
-    # Find the highest totalcount among candidates
-    max_count <- max(candidates$totalcount, na.rm = TRUE)
+    if (length(candidates$V2) == 1) return(c(1:length(candi)))
+    # Find the highest UMI_Count among candidates
+    max_count <- max(candidates$UMI_Count, na.rm = TRUE)
     # Select all candidates with the highest count
-    best_counts <- candidates[candidates$totalcount == max_count,]
+    best_counts <- candidates[candidates$UMI_Count == max_count,]
 
     
 
@@ -76,7 +60,7 @@ select_best_match <- function(candidates) {
 
     if (nrow(best_counts) == 1) {
 
-        return(which(candidates$totalcount == max_count)[1])
+        return(which(candidates$UMI_Count == max_count)[1])
 
     }
 
@@ -92,7 +76,7 @@ select_best_match <- function(candidates) {
 
     if (sum(valid_celltype) == 1) {
 
-        return(which(candidates$totalcount == max_count & 
+        return(which(candidates$UMI_Count == max_count & 
 
                     !is.na(candidates$celltype))[1])
 
@@ -321,8 +305,8 @@ process_sample_matches <- function(sample_id, pre_matches, post_matches,
     post_ref_matched <- post_ref_data[match(post_joined$match, post_ref_data$V1),]
     post_final_match <- data.frame(post_joined, post_ref_matched)
     post_hamm <- post_final_match %>% 
-        group_by(V2, match, V2.1, totalcount) %>% 
-         summarize(synpcount = sum(V4), .groups = "drop")
+        group_by(V2, match, V2.1, UMI_Count) %>% 
+         summarize(synpcount = n(), .groups = "drop")
     
     # Process PRE matches
     pre_matches_all <- pre_query_data[pre_query_data$V1 %in% pre_matches$V1,]
@@ -331,8 +315,8 @@ process_sample_matches <- function(sample_id, pre_matches, post_matches,
     pre_ref_matched <- pre_ref_data[match(pre_joined$match, pre_ref_data$V1),]
     pre_final_match <- data.frame(pre_joined, pre_ref_matched)
     pre_hamm <- pre_final_match %>% 
-        group_by(V2, match, V2.1, totalcount) %>% 
-        summarize(synpcount = sum(V4), .groups = "drop")
+        group_by(V2, match, V2.1, UMI_Count) %>% 
+        summarize(synpcount = n(), .groups = "drop")
     
     # Apply filters to both sets
     filter_matches <- function(matches) {
@@ -345,8 +329,8 @@ process_sample_matches <- function(sample_id, pre_matches, post_matches,
             mutate(max_count1 = max(synpcount)) %>%
             filter(synpcount == max_count1) %>%
             group_by(V2) %>%
-            mutate(max_count2 = max(totalcount)) %>%
-            filter(totalcount == max_count2) %>%
+            mutate(max_count2 = max(UMI_Count)) %>%
+            filter(UMI_Count == max_count2) %>%
             group_by(V2, V2.1) %>%
             filter(n_distinct(match) == n()) %>%
             ungroup() %>%
@@ -372,16 +356,21 @@ process_sample_matches <- function(sample_id, pre_matches, post_matches,
         post_filtered = post_filtered
     ))
 }
-```    
-    
-     
+```
+
 #stage 1: clean up the nuc barcode data    
 ```{r setup, include=FALSE}
 library(data.table)
 library(ggplot2)
 library(dplyr)
 
-filter_neurons <- function(sample_id, 
+### This filter_neurons_new function is modified from filter_neuron function in new_match.
+### Aim is to clean the nucleus barcode data base on UMI count rather than total count.
+### Input data comes from the results of /home/zhouwan2/expansion_link/RNA_seq_processing/cseq1_revision_codes_082225/Nuc_UMI_clean_090925.ipynb, where CB-BC pairs are grouped and attached with UMI count.
+
+
+
+filter_neurons_new <- function(sample_id, 
                          pn_neuron_barcodes_file = "pn_neuron_barcodes.txt",
                          cn_neuron_barcodes_file = "cn_neuron_barcodes.txt",
                          base_path = ".") {
@@ -391,13 +380,10 @@ filter_neurons <- function(sample_id,
     cn_neuron_barcodes <- readLines(cn_neuron_barcodes_file)
     
     # Load raw data - these are already grouped and summed by V1,V2 with totalcount
-    pn_data <- fread(file.path(base_path, sprintf("cseq%d_PN1.no.1.csv", sample_id)), col.names = c("n", "V1", "V2", "totalcount"))
-    pn_data$n <- NULL
-    pn_data$V2 <- gsub("cseq", "", pn_data$V2)
-    cn_data <- fread(file.path(base_path, sprintf("cseq%d_CN1.no.1.csv", sample_id)), col.names = c("n", "V1", "V2","totalcount"))
-    cn_data$n <- NULL
-    cn_data$V2 <- gsub("cseq", "", cn_data$V2)
-    
+    pn_data <- fread(file.path(base_path, sprintf("cseq%d_PN.umi.csv", sample_id)), col.names = c("V1", "V2", "UMI_Count"))
+
+    cn_data <- fread(file.path(base_path, sprintf("cseq%d_CN.umi.csv", sample_id)), col.names = c("V1", "V2", "UMI_Count"))
+
     # Print initial statistics
     cat(sprintf("\nInitial data statistics for sample %d:\n", sample_id))
     cat(sprintf("PN data: %d unique N30s, %d unique cell barcodes, %d total rows\n",
@@ -407,10 +393,10 @@ filter_neurons <- function(sample_id,
     
  # When saving the filtered data, explicitly name columns and drop the row index
     pn_neurons <- pn_data[pn_data$V2 %in% pn_neuron_barcodes]
-    fwrite(pn_neurons, sprintf("cseq%d_PN.neurons.csv", sample_id), row.names = FALSE)
+    fwrite(pn_neurons, sprintf("cseq%d_PN.neurons.umi.csv", sample_id), row.names = FALSE)
     
     cn_neurons <- cn_data[cn_data$V2 %in% cn_neuron_barcodes]
-    fwrite(cn_neurons, sprintf("cseq%d_CN.neurons.csv", sample_id), row.names = FALSE)
+    fwrite(cn_neurons, sprintf("cseq%d_CN.neurons.umi.csv", sample_id), row.names = FALSE)
     
     # Print filtering statistics
     cat(sprintf("\nFiltering results:\n"))
@@ -446,8 +432,8 @@ filter_neurons <- function(sample_id,
 
 disambiguate_assignments <- function(sample_id) {
     # Load the neuron-filtered data
-    pn_neurons <- fread(sprintf("cseq%d_PN.neurons.csv", sample_id))
-    cn_neurons <- fread(sprintf("cseq%d_CN.neurons.csv", sample_id))
+    pn_neurons <- fread(sprintf("cseq%d_PN.neurons.umi.csv", sample_id))
+    cn_neurons <- fread(sprintf("cseq%d_CN.neurons.umi.csv", sample_id))
     
     # Print column names to verify our data structure
     cat("\nColumns in input data:")
@@ -461,10 +447,10 @@ disambiguate_assignments <- function(sample_id) {
             .SD
         } else {
             # Multiple assignments - check the ratio
-            sorted_counts <- sort(totalcount, decreasing = TRUE)
+            sorted_counts <- sort(UMI_Count, decreasing = TRUE)
             if (sorted_counts[1] > 5 * sorted_counts[2]) {
                 # Keep all columns for the row with max count
-                .SD[which.max(totalcount)]
+                .SD[which.max(UMI_Count)]
             }
         }
     }, by = V1]
@@ -474,9 +460,9 @@ disambiguate_assignments <- function(sample_id) {
         if (.N == 1) {
             .SD
         } else {
-            sorted_counts <- sort(totalcount, decreasing = TRUE)
+            sorted_counts <- sort(UMI_Count, decreasing = TRUE)
             if (sorted_counts[1] > 2 * sorted_counts[2]) {
-                .SD[which.max(totalcount)]
+                .SD[which.max(UMI_Count)]
             }
         }
     }, by = V1]
@@ -499,8 +485,8 @@ disambiguate_assignments <- function(sample_id) {
     cat(sprintf("\n- Kept %.1f%% of N30s", 100 * uniqueN(cn_filtered$V1)/uniqueN(cn_neurons$V1)))
     
     # Save all columns of the filtered data
-    fwrite(pn_filtered, sprintf("cseq%d_PN.neuron.clean.csv", sample_id))
-    fwrite(cn_filtered, sprintf("cseq%d_CN.neuron.clean.csv", sample_id))
+    fwrite(pn_filtered, sprintf("cseq%d_PN.neuron.umiClean.csv", sample_id))
+    fwrite(cn_filtered, sprintf("cseq%d_CN.neuron.umiClean.csv", sample_id))
     
     return(list(pn = pn_filtered, cn = cn_filtered))
 }
@@ -512,7 +498,7 @@ process_nuc <- function(sample_ids = c(1, 25, 31, 34, 35, 36)) {
         cat(sprintf("\nProcessing sample %d...\n", sample_id))
         
         # Step 1: Filter neurons
-        neuron_results <- filter_neurons(sample_id)
+        neuron_results <- filter_neurons_new(sample_id)
         
         # Step 2: Disambiguate assignments
         nuc_results <- disambiguate_assignments(sample_id)
@@ -521,20 +507,18 @@ process_nuc <- function(sample_ids = c(1, 25, 31, 34, 35, 36)) {
         all_results[[as.character(sample_id)]] <- nuc_results
     }
     
-    save(all_results, file = "disambiguated_nuc_barcodes.RData")
+    save(all_results, file = "disambiguated_nuc_barcodes_umi.RData")
     return(all_results)
 }
 results <- process_nuc()
 
 ```
 
-
-
 #stage 2: iteratively process all samples and save files and stats
 ```{r}
 ## Main function to process all samples
 process_all_samples <- function(sample_ids = c(1,25,31,34,35,36),
-                              max_hamming = 3,
+                              max_hamming = 10,
                               output_dir = ".",
                               n_cores = detectCores() - 1) {
     
@@ -577,13 +561,16 @@ process_all_samples <- function(sample_ids = c(1,25,31,34,35,36),
         
         tryCatch({
             # Load clean neuron data with their column names
-            pn_data <- fread(sprintf("cseq%d_PN.neuron.clean.csv", sample_id))
-            cn_data <- fread(sprintf("cseq%d_CN.neuron.clean.csv", sample_id))
+            pn_data <- fread(sprintf("cseq%d_PN.neuron.umiClean.csv", sample_id))
+            cn_data <- fread(sprintf("cseq%d_CN.neuron.umiClean.csv", sample_id))
 
             
             # Load synapse data
             synp_pre <- fread(sprintf("cseq%d_synp.pre.clean.csv", sample_id))
             synp_post <- fread(sprintf("cseq%d_synp.post.clean.csv", sample_id))
+            synp_pre$V2 <- gsub("cseq", "", synp_pre$V2)
+            synp_post$V2 <- gsub("cseq", "", synp_post$V2)
+            
             
             cat(sprintf("\nInitial sequence counts:"))
             cat(sprintf("\n- Pre-synaptic sequences: %d", length(unique(synp_pre$V1))))
@@ -778,7 +765,6 @@ process_all_samples <- function(sample_ids = c(1,25,31,34,35,36),
 results <- process_all_samples()
 ```
 
-
 #stage 3: now let's attach cell type and generate the plots for each hamm distance, including three versions of connectome maps
 #functions
 ```{r}
@@ -883,7 +869,7 @@ analyze_connectome <- function(pre_data, post_data, output_csv = TRUE,
       synp_CB = V2,
       pre_N30 = match,
       preNuc_CB = V2.1,
-      preNuc_count = totalcount,
+      preNuc_count = UMI_Count,
       presynp_count = synpcount
     )
   
@@ -892,7 +878,7 @@ analyze_connectome <- function(pre_data, post_data, output_csv = TRUE,
       synp_CB = V2,
       post_N30 = match,
       postNuc_CB = V2.1,
-      postNuc_count = totalcount,
+      postNuc_count = UMI_Count,
       postsynp_count = synpcount
     )
   
@@ -901,7 +887,7 @@ analyze_connectome <- function(pre_data, post_data, output_csv = TRUE,
   # Calculate counts
   connectome.match.count <- connectome.match %>% 
     group_by(synp_CB, preNuc_CB, postNuc_CB, celltype.pre, celltype.post) %>% 
-    summarize(totalcount = sum(presynp_count, postsynp_count), .groups = 'drop')
+    summarize(UMI_Count = sum(presynp_count, postsynp_count), .groups = 'drop')
   
   if(output_csv) {
     write.csv(connectome.match.count, csv_filename)
@@ -1027,7 +1013,7 @@ analyze_connectome_by_replicate_solid <- function(pre_data, post_data, output_cs
       synp_CB = V2,
       pre_N30 = match,
       preNuc_CB = V2.1,
-      preNuc_count = totalcount,
+      preNuc_count = UMI_Count,
       presynp_count = synpcount
     )
   
@@ -1036,7 +1022,7 @@ analyze_connectome_by_replicate_solid <- function(pre_data, post_data, output_cs
       synp_CB = V2,
       post_N30 = match,
       postNuc_CB = V2.1,
-      postNuc_count = totalcount,
+      postNuc_count = UMI_Count,
       postsynp_count = synpcount
     )
   
@@ -1044,7 +1030,7 @@ analyze_connectome_by_replicate_solid <- function(pre_data, post_data, output_cs
   
   connectome.match.count <- connectome.match %>% 
     group_by(synp_CB, preNuc_CB, postNuc_CB, celltype.pre, celltype.post) %>% 
-    summarize(totalcount = sum(presynp_count, postsynp_count), .groups = 'drop')
+    summarize(UMI_Count = sum(presynp_count, postsynp_count), .groups = 'drop')
   
   if(output_csv) {
     write.csv(connectome.match.count, csv_filename)
@@ -1197,7 +1183,7 @@ replicate_colors <- c(
 #plots
 ```{r}
 # iterative plot generation
-generate_plots <- function(hamming_distances = 0:3, 
+generate_plots <- function(hamming_distances = 0:10, 
                                     output_folder = "all_plots") {
     # Create main output directory
     dir.create(output_folder, showWarnings = FALSE)
@@ -1230,7 +1216,7 @@ generate_plots <- function(hamming_distances = 0:3,
                 synp_CB = V2,
                 pre_N30 = match,
                 preNuc_CB = V2.1,
-                preNuc_count = totalcount,
+                preNuc_count = UMI_Count,
                 presynp_count = synpcount
             )
         
@@ -1240,7 +1226,7 @@ generate_plots <- function(hamming_distances = 0:3,
                 synp_CB = V2,
                 post_N30 = match,
                 postNuc_CB = V2.1,
-                postNuc_count = totalcount,
+                postNuc_count = UMI_Count,
                 postsynp_count = synpcount
             )
         
@@ -1466,7 +1452,7 @@ create_barcode_plot <- function(stats_data, hamm_dist, show_legend = FALSE) {
 
 # Create barplots for each distance
 barplot_list <- list()
-for(hamm_dist in 0:3) {
+for(hamm_dist in 0:10) {
     stats_data <- combined_stats %>% filter(distance == hamm_dist)
     barplot_list[[hamm_dist + 1]] <- create_barcode_plot(stats_data, hamm_dist)
 }
@@ -1474,7 +1460,7 @@ for(hamm_dist in 0:3) {
 # Create and save barplot grid
 barplot_grid <- grid.arrange(
     grobs = barplot_list,
-    ncol = 2,
+    ncol = 6,
     nrow = 2
 )
 ggsave("panel_barcode_counts_grid.pdf", barplot_grid, width = 16, height = 16)
@@ -1521,7 +1507,7 @@ library(dplyr)
 library(readr)
 
 # Read the CSV data
-data <- read.csv("./all_plots/hamm2/connectome.match.count.csv")
+data <- read.csv("./all_plots/hamm5/connectome.match.count.csv")
 
 
 # Define node colors without UBC
@@ -1599,10 +1585,10 @@ p <- sankeyNetwork(
     ),
     nodeWidth = 40,
     nodePadding = 25,
-    height = 900,
+    height = 1600,
     width = 1000,
     sinksRight = TRUE,
-    fontSize = 25,
+    fontSize = 35,
     fontFamily = "Arial",
     iterations = 100
 )
@@ -1611,7 +1597,7 @@ p <- sankeyNetwork(
 p
 # Save the plot
 htmlwidgets::saveWidget(p, 
-                       file = "sankey_diagram.html", 
+                       file = "sankey_diagram_092125.html", 
                        selfcontained = TRUE)
 ```
 
