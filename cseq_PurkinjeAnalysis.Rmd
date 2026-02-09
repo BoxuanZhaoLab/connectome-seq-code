@@ -1,8 +1,15 @@
 ---
-title: "Purkinje_analysis_051225"
+title: "Purkinje_analysis_091925"
 output: html_document
-date: "2025-05-12"
+date: "2025-09-19"
 ---
+
+```{r}
+Sys.setenv(RETICULATE_PYTHON = "/home/boxuan/anaconda3/envs/r44-scvi/bin/python")
+reticulate::py_config()  # should show r44-scvi
+
+```
+
 
 ```{r}
 library(dplyr)
@@ -27,7 +34,7 @@ Load all functions in PC_analysisFunc.R
 
 ```{r}
 load("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/celltype_annotations.rdata")
-load("/data/R/CSeq_reanalyze/connectome-seq_code_Joe/manuscript_update_041525/cseq.all.matched.BC.hamm2.RData")
+load("/media/expansion/RNA_seq_processing/manuscript_update_082825/connectome_umi_version_cseq34_091725/correct.cseq.all.matched.BC.hamm5.RData") # changed here, 091925
 load("/data/R/CSeq_reanalyze/Pukinje cell/AAV1-Cere-Nuc.RData")
 cn_path_list <- c(
   "/home/boxuan/data/cseq1/cseq1-CN2/outs/filtered_feature_bc_matrix/",
@@ -94,7 +101,8 @@ pcm <- RunUMAP(pcm, dims = 1:30, reduction = "pca", reduction.name = "umap.unint
 pcm.scvi <- IntegrateLayers(
   object = pcm, method = scVIIntegration,
   new.reduction = "integrated.scvi",
-  conda_env = "/home/boxuan/anaconda3/envs/r-reticulate/envs/scvi-env", verbose = FALSE
+  conda_env = "r44-scvi",
+  verbose = FALSE
 )
 
 pcm.scvi <- FindNeighbors(pcm.scvi, reduction = "integrated.scvi", dims = 1:30) %>% 
@@ -116,15 +124,17 @@ connectivity_props <- table(
 
 ```{r}
 pcm.scvi.joined <- pcm.scvi %>% JoinLayers()
+pc9.scvi <- subset(pcm.scvi.joined, batch == "9")
 pcm.scvi.cseq <- subset(pcm.scvi.joined, batch != "9")
 
 pcm.scvi.imp <- pcm.scvi.cseq # imp -> imputation
 pcm.scvi.imp$connectivity <- "Cseq-negative"
-pcm.scvi.imp$connectivity[Idents(pcm.scvi.imp) %in% c("1","2","3","4","5","6")] <- "Cseq-positive"
+pcm.scvi.imp$connectivity[Idents(pcm.scvi.imp) %in% c("1","2","3","4","6","7")] <- "Cseq-positive"
 
 
 analyze_celltype_pc(pcm.scvi.cseq, pc9.scvi, "Purkinje")
-analyze_celltype_pc(pcm.scvi.imp, pc9.scvi, "Purkinje")
+analyze_celltype_pc(pcm.scvi.imp, pc9.scvi, "Purkinje", output_dir = "imp")
+volcano_pc(pcm.scvi.imp, pc9.scvi, "Purkinje", output_dir = "volc")
 ```
 
 
